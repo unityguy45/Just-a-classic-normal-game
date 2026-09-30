@@ -43,6 +43,10 @@ var font: Font
 var snd := {}
 var players: Array = []
 var paused := false
+var raining := false
+var rain_left := 0
+var rain_amt := 0.0
+var drops: Array = []
 
 
 func _ready() -> void:
@@ -70,6 +74,9 @@ func _reset() -> void:
 	vel = 0.0
 	score = 0
 	new_best = false
+	raining = false
+	rain_left = 0
+	rain_amt = 0.0
 	crash_rot = 0.0
 	pencils.clear()
 	var x := W + 40.0
@@ -145,7 +152,7 @@ func _start() -> void:
 
 
 func _flap() -> void:
-	vel = FLAP
+	vel = FLAP * (1.0 - 0.35 * rain_amt)
 	_play("flap", randf_range(0.9, 1.15))
 	for i in 3:
 		parts.append([Vector2(PLANE_X - 14, plane_y + 4), Vector2(randf_range(-90, -50), randf_range(10, 50)), 0.35, 0.35, Color(WHITE, 0.9), 4.0])
@@ -164,6 +171,18 @@ func _process(delta: float) -> void:
 	elif state == "over":
 		sp = 0.0
 	scroll += sp * delta
+	var target := 1.0 if raining and state == "play" else 0.0
+	if state == "over" and raining:
+		target = 1.0
+	rain_amt = move_toward(rain_amt, target, delta * 0.6)
+	if rain_amt > 0.0:
+		var want := int(rain_amt * 140.0)
+		while drops.size() < want:
+			drops.append([Vector2(randf_range(-40, W + 40), randf_range(-H, 0)), randf_range(380, 520), randf_range(6, 12)])
+	for d in drops:
+		d[0].y += d[1] * delta
+		d[0].x -= (d[1] * 0.25 + sp * 0.5) * delta
+	drops = drops.filter(func(d): return d[0].y < H + 10 and d[0].x > -20)
 	for d in doodles:
 		d[0].x -= sp * 0.4 * delta
 		if d[0].x < -30:
@@ -201,8 +220,8 @@ func _update_play(delta: float, sp: float) -> void:
 		_add_pencil(pencils.back()[0] + _spacing())
 	if pencils[0][0] < -60:
 		pencils.pop_front()
-	vel += GRAVITY * delta
-	vel = minf(vel, 520.0)
+	vel += GRAVITY * (1.0 + 0.5 * rain_amt) * delta
+	vel = minf(vel, 520.0 + 120.0 * rain_amt)
 	plane_y += vel * delta
 	for p in pencils:
 		if not p[3] and p[0] + PENCIL_W < PLANE_X - 10:
@@ -214,6 +233,7 @@ func _update_play(delta: float, sp: float) -> void:
 				flash = 1.0
 				_play("level", 1.0)
 				pops.append([Vector2(W / 2.0, H / 2.0 - 40), "%d!" % score, 1.0])
+			_rain_check()
 	if plane_y > H - 6 or plane_y < 4:
 		_crash()
 		return
@@ -221,6 +241,23 @@ func _update_play(delta: float, sp: float) -> void:
 		if _hit(p):
 			_crash()
 			return
+
+
+func _rain_check() -> void:
+	if raining:
+		rain_left -= 1
+		if rain_left <= 0:
+			raining = false
+		return
+	var start := false
+	if score == 10:
+		start = true
+	elif score > 10 and (score - 10) % 13 == 0 and randf() < 0.1:
+		start = true
+	if start:
+		raining = true
+		rain_left = randi_range(5, 15)
+		pops.append([Vector2(W / 2.0, H / 2.0 + 10), "RAIN!", 1.2])
 
 
 func _gap_center(p: Array) -> float:
@@ -277,6 +314,11 @@ func _draw() -> void:
 		var a: float = p[2] / p[3]
 		draw_rect(Rect2(p[0] - Vector2.ONE * p[5] / 2.0, Vector2.ONE * p[5]), Color(p[4], a))
 	_plane(Vector2(PLANE_X, plane_y) + so)
+	if rain_amt > 0.0:
+		draw_rect(Rect2(-20, -20, W + 40, H + 40), Color(0.2, 0.25, 0.35, 0.22 * rain_amt))
+		for d in drops:
+			var dp: Vector2 = d[0]
+			draw_line(dp, dp + Vector2(-d[2] * 0.3, d[2]), Color(0.45, 0.6, 0.85, 0.7 * rain_amt), 1.5)
 	draw_set_transform(Vector2.ZERO)
 	for p in pops:
 		_text(p[1], p[0], 16 if p[1] == "+1" else 32, BLUE_DARK, true)
@@ -290,6 +332,7 @@ func _draw() -> void:
 			_banner("GET READY", "tap, click or press space to flap")
 		"play":
 			_score_box()
+			_scenario_box()
 		"over":
 			_draw_over()
 	if paused:
@@ -414,6 +457,20 @@ func _draw_over() -> void:
 		_text("NEW BEST!", Vector2(W / 2.0, 170), 16, Color(ORANGE, a * (0.6 + 0.4 * sin(t * 8.0))), true)
 	if over_t > 0.6:
 		_text("click or space to fly again", Vector2(W / 2.0, 198), 12, Color(BLUE_DARK, 0.6 + 0.4 * sin(t * 4.0)), true)
+
+
+func _scenario_box() -> void:
+	if rain_amt <= 0.0:
+		return
+	var a := clampf(rain_amt * 1.5, 0.0, 1.0)
+	var slide := (1.0 - a) * 140.0
+	var r := Rect2(W - 132 + slide, 12, 120, 44)
+	draw_rect(r.grow(2), Color(INK, a))
+	draw_rect(r, Color(0.85, 0.92, 1.0, a))
+	draw_rect(Rect2(r.position, Vector2(5, r.size.y)), Color(0.3, 0.5, 0.85, a))
+	var blink := 0.8 + 0.2 * sin(t * 6.0)
+	_text("SCENARIO ACTIVE", r.position + Vector2(64, 17), 11, Color(RED, a * blink), true)
+	_text("RAIN", r.position + Vector2(64, 35), 14, Color(INK, a), true)
 
 
 func _score_box() -> void:
