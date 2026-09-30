@@ -1,0 +1,490 @@
+extends Node2D
+
+const W := 480.0
+const H := 270.0
+const PLANE_X := 130.0
+const GRAVITY := 900.0
+const FLAP := -290.0
+const PENCIL_W := 24.0
+
+const PAPER := Color("f4efe1")
+const RULE := Color("bcd4f0")
+const MARGIN := Color("f3a0a8")
+const INK := Color("1a1423")
+const WHITE := Color("fff7e8")
+const GREY := Color("8b8aa6")
+const GREY_DARK := Color("55526e")
+const RED := Color("e84a5f")
+const YELLOW := Color("ffd23f")
+const BLUE := Color("4aa3ff")
+const BLUE_DARK := Color("2e5aa8")
+const PINK := Color("ff6f9c")
+const LIME := Color("8ee05a")
+const ORANGE := Color("ff8a3d")
+const WOOD := Color("e0a068")
+
+var state := "menu"
+var plane_y := H / 2.0
+var vel := 0.0
+var pencils: Array = []
+var doodles: Array = []
+var parts: Array = []
+var pops: Array = []
+var scroll := 0.0
+var score := 0
+var best := 0
+var new_best := false
+var shake := 0.0
+var t := 0.0
+var crash_rot := 0.0
+var over_t := 0.0
+var flash := 0.0
+var font: Font
+var snd := {}
+var players: Array = []
+var paused := false
+
+
+func _ready() -> void:
+	var win := get_tree().root
+	win.content_scale_size = Vector2i(int(W), int(H))
+	win.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	win.canvas_item_default_texture_filter = Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_LINEAR
+	randomize()
+	if not OS.has_feature("web"):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	font = ThemeDB.fallback_font
+	if ResourceLoader.exists("res://font.ttf"):
+		font = load("res://font.ttf")
+	_load_best()
+	_make_sounds()
+	for i in 14:
+		doodles.append([Vector2(randf_range(0, W), randf_range(30, H - 30)), randi() % 5])
+	_reset()
+
+
+func _reset() -> void:
+	plane_y = H / 2.0
+	vel = 0.0
+	score = 0
+	new_best = false
+	crash_rot = 0.0
+	pencils.clear()
+	var x := W + 40.0
+	while x < W * 2.2:
+		_add_pencil(x)
+		x += _spacing()
+
+
+func _gap() -> float:
+	return maxf(118.0 - score * 1.6, 70.0)
+
+
+func _speed() -> float:
+	return minf(115.0 + score * 3.0, 230.0)
+
+
+func _spacing() -> float:
+	return maxf(190.0 - score * 1.2, 150.0)
+
+
+func _add_pencil(x: float) -> void:
+	var g := _gap()
+	var m := g / 2.0 + 18.0
+	var last: float = H / 2.0
+	if not pencils.is_empty():
+		last = pencils.back()[1]
+	var wiggle := minf(55.0 + score * 2.0, 110.0)
+	var c := clampf(last + randf_range(-wiggle, wiggle), m, H - m)
+	var col: Color = [YELLOW, BLUE, PINK, LIME, ORANGE].pick_random()
+	var moving := score >= 15 and randf() < minf(0.15 + (score - 15) * 0.02, 0.5)
+	pencils.append([x, c, g, false, col, moving, randf() * TAU])
+
+
+func _unhandled_input(e: InputEvent) -> void:
+	var tap: bool = (e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT) or (e is InputEventKey and e.pressed and not e.echo and e.keycode in [KEY_SPACE, KEY_UP, KEY_W, KEY_Z, KEY_ENTER])
+	if e is InputEventKey and e.pressed and not e.echo:
+		if e.keycode == KEY_F11:
+			var fs := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if fs else DisplayServer.WINDOW_MODE_FULLSCREEN)
+			return
+		if e.keycode == KEY_ESCAPE or e.keycode == KEY_P:
+			if state == "play":
+				paused = not paused
+				_play("point", 0.7)
+			return
+		if e.keycode == KEY_M:
+			AudioServer.set_bus_mute(0, not AudioServer.is_bus_mute(0))
+			return
+	if not tap:
+		return
+	if paused:
+		paused = false
+		return
+	match state:
+		"menu":
+			_start()
+		"ready":
+			state = "play"
+			_flap()
+		"play":
+			_flap()
+		"over":
+			if over_t > 0.6:
+				_reset()
+				state = "ready"
+				_play("point", 1.2)
+
+
+func _start() -> void:
+	_reset()
+	state = "ready"
+	_play("point", 1.2)
+
+
+func _flap() -> void:
+	vel = FLAP
+	_play("flap", randf_range(0.9, 1.15))
+	for i in 3:
+		parts.append([Vector2(PLANE_X - 14, plane_y + 4), Vector2(randf_range(-90, -50), randf_range(10, 50)), 0.35, 0.35, Color(WHITE, 0.9), 4.0])
+
+
+func _process(delta: float) -> void:
+	t += delta
+	shake = maxf(0.0, shake - delta * 2.5)
+	flash = maxf(0.0, flash - delta * 3.0)
+	if paused:
+		queue_redraw()
+		return
+	var sp := 60.0
+	if state == "play":
+		sp = _speed()
+	elif state == "over":
+		sp = 0.0
+	scroll += sp * delta
+	for d in doodles:
+		d[0].x -= sp * 0.4 * delta
+		if d[0].x < -30:
+			d[0].x += W + 60
+			d[0].y = randf_range(30, H - 30)
+	match state:
+		"menu", "ready":
+			plane_y = H / 2.0 + sin(t * 3.0) * 8.0
+			vel = cos(t * 3.0) * 24.0
+		"play":
+			_update_play(delta, sp)
+		"over":
+			over_t += delta
+			vel += GRAVITY * delta
+			plane_y = minf(plane_y + vel * delta, H - 10)
+			crash_rot += delta * 8.0
+	for p in parts:
+		p[0] += p[1] * delta
+		p[1] *= 0.92
+		p[2] -= delta
+	parts = parts.filter(func(p): return p[2] > 0.0)
+	for p in pops:
+		p[0].y -= 30.0 * delta
+		p[2] -= delta
+	pops = pops.filter(func(p): return p[2] > 0.0)
+	queue_redraw()
+
+
+func _update_play(delta: float, sp: float) -> void:
+	for p in pencils:
+		p[0] -= sp * delta
+		if p[5]:
+			p[6] += delta * 1.6
+	if pencils.back()[0] < W + 40:
+		_add_pencil(pencils.back()[0] + _spacing())
+	if pencils[0][0] < -60:
+		pencils.pop_front()
+	vel += GRAVITY * delta
+	vel = minf(vel, 520.0)
+	plane_y += vel * delta
+	for p in pencils:
+		if not p[3] and p[0] + PENCIL_W < PLANE_X - 10:
+			p[3] = true
+			score += 1
+			_play("point", 1.0 + (score % 5) * 0.06)
+			pops.append([Vector2(PLANE_X, plane_y - 20), "+1", 0.6])
+			if score % 10 == 0:
+				flash = 1.0
+				_play("level", 1.0)
+				pops.append([Vector2(W / 2.0, H / 2.0 - 40), "%d!" % score, 1.0])
+	if plane_y > H - 6 or plane_y < 4:
+		_crash()
+		return
+	for p in pencils:
+		if _hit(p):
+			_crash()
+			return
+
+
+func _gap_center(p: Array) -> float:
+	if p[5]:
+		var m: float = p[2] / 2.0 + 18.0
+		return clampf(p[1] + sin(p[6]) * 34.0, m, H - m)
+	return p[1]
+
+
+func _hit(p: Array) -> bool:
+	var px: float = p[0]
+	if PLANE_X + 11 < px + 2 or PLANE_X - 11 > px + PENCIL_W - 2:
+		return false
+	var c := _gap_center(p)
+	var top: float = c - p[2] / 2.0
+	var bot: float = c + p[2] / 2.0
+	return plane_y - 5 < top or plane_y + 5 > bot
+
+
+func _crash() -> void:
+	state = "over"
+	over_t = 0.0
+	vel = -160.0
+	shake = 0.6
+	_play("crash", 1.0)
+	for i in 22:
+		var a := randf() * TAU
+		parts.append([Vector2(PLANE_X, plane_y), Vector2.from_angle(a) * randf_range(60, 200), 0.6, 0.6, [WHITE, GREY, RED].pick_random(), randf_range(3, 6)])
+	if score > best:
+		best = score
+		new_best = true
+		_save_best()
+
+
+func _draw() -> void:
+	var so := Vector2(randf_range(-1, 1), randf_range(-1, 1)) * shake * shake * 8.0
+	draw_set_transform(so)
+	draw_rect(Rect2(-20, -20, W + 40, H + 40), PAPER)
+	var ry := 26.0
+	while ry < H + 20:
+		draw_rect(Rect2(-20, ry, W + 40, 1), RULE)
+		ry += 18.0
+	var mx := fposmod(60.0 - scroll, W + 120.0) - 60.0
+	draw_rect(Rect2(mx, -20, 2, H + 40), MARGIN)
+	for i in 4:
+		draw_circle(Vector2(mx - 20, 40 + i * 64), 6, Color("d9d2c0"))
+	for d in doodles:
+		_doodle(d[0], d[1])
+	if state != "menu":
+		for p in pencils:
+			if p[0] > -60 and p[0] < W + 20:
+				_pencil(p)
+	for p in parts:
+		var a: float = p[2] / p[3]
+		draw_rect(Rect2(p[0] - Vector2.ONE * p[5] / 2.0, Vector2.ONE * p[5]), Color(p[4], a))
+	_plane(Vector2(PLANE_X, plane_y) + so)
+	draw_set_transform(Vector2.ZERO)
+	for p in pops:
+		_text(p[1], p[0], 16 if p[1] == "+1" else 32, BLUE_DARK, true)
+	if flash > 0.0:
+		draw_rect(Rect2(0, 0, W, H), Color(1, 1, 1, flash * 0.25))
+	match state:
+		"menu":
+			_draw_menu()
+		"ready":
+			_score_box()
+			_banner("GET READY", "tap, click or press space to flap")
+		"play":
+			_score_box()
+		"over":
+			_draw_over()
+	if paused:
+		draw_rect(Rect2(0, 0, W, H), Color(0, 0, 0, 0.45))
+		_text("PAUSED", Vector2(W / 2.0, H / 2.0 - 10), 32, WHITE, true)
+		_text("click or space to continue", Vector2(W / 2.0, H / 2.0 + 20), 12, WHITE, true)
+
+
+func _plane(base: Vector2) -> void:
+	var rot := clampf(vel / 500.0, -0.5, 0.8)
+	if state == "over":
+		draw_set_transform(base, crash_rot)
+		draw_circle(Vector2.ZERO, 12, INK)
+		draw_circle(Vector2.ZERO, 10.5, WHITE)
+		draw_line(Vector2(-5, -3), Vector2(3, 2), GREY, 1.5)
+		draw_line(Vector2(-2, 5), Vector2(5, -5), GREY, 1.5)
+		draw_line(Vector2(-6, 3), Vector2(-1, -6), GREY, 1.5)
+		draw_set_transform(Vector2.ZERO)
+		return
+	var top := PackedVector2Array([Vector2(18, 0), Vector2(-15, -13), Vector2(-7, 0)])
+	var under := PackedVector2Array([Vector2(18, 0), Vector2(-7, 0), Vector2(-15, 10)])
+	for o in [Vector2(-1.5, 0), Vector2(1.5, 0), Vector2(0, -1.5), Vector2(0, 1.5)]:
+		draw_set_transform(base + o, rot)
+		draw_colored_polygon(top, INK)
+		draw_colored_polygon(under, INK)
+	draw_set_transform(base, rot)
+	draw_colored_polygon(top, WHITE)
+	draw_colored_polygon(under, Color("a9c4e8"))
+	draw_line(Vector2(-12, -7), Vector2(7, -2), RED, 3)
+	draw_line(Vector2(17, 0), Vector2(-7, 0), GREY_DARK, 1.5)
+	draw_set_transform(Vector2.ZERO)
+
+
+func _pencil(p: Array) -> void:
+	var x: float = p[0]
+	var c := _gap_center(p)
+	var top: float = floor(c - p[2] / 2.0)
+	var bot: float = floor(c + p[2] / 2.0)
+	var col: Color = p[4]
+	_pencil_body(x, -20.0, top - 18, col)
+	_pencil_tip(x, top - 18, 1)
+	_pencil_body(x, bot + 18, H + 20.0, col)
+	_pencil_tip(x, bot + 18, -1)
+	if p[5]:
+		draw_rect(Rect2(x + 6, top - 40, 12, 3), Color(INK, 0.3))
+		draw_rect(Rect2(x + 6, bot + 37, 12, 3), Color(INK, 0.3))
+
+
+func _pencil_body(x: float, y0: float, y1: float, col: Color) -> void:
+	if y1 <= y0:
+		return
+	draw_rect(Rect2(x, y0, PENCIL_W, y1 - y0), INK)
+	draw_rect(Rect2(x + 2, y0, PENCIL_W - 4, y1 - y0), col)
+	draw_rect(Rect2(x + 7, y0, 2, y1 - y0), Color(1, 1, 1, 0.35))
+	draw_rect(Rect2(x + 15, y0, 3, y1 - y0), Color(0, 0, 0, 0.15))
+	if y0 >= 0:
+		draw_rect(Rect2(x, y1 - 16, PENCIL_W, 6), GREY)
+		draw_rect(Rect2(x + 2, y1 - 10, PENCIL_W - 4, 10), PINK)
+	else:
+		draw_rect(Rect2(x, y0 + 10, PENCIL_W, 6), GREY)
+		draw_rect(Rect2(x + 2, y0, PENCIL_W - 4, 10), PINK)
+
+
+func _pencil_tip(x: float, y: float, d: int) -> void:
+	var cx := x + PENCIL_W / 2.0
+	draw_colored_polygon(PackedVector2Array([Vector2(x, y), Vector2(x + PENCIL_W, y), Vector2(cx, y + 18 * d)]), INK)
+	draw_colored_polygon(PackedVector2Array([Vector2(x + 2, y), Vector2(x + PENCIL_W - 2, y), Vector2(cx, y + 16 * d)]), WOOD)
+	draw_colored_polygon(PackedVector2Array([Vector2(cx - 3, y + 11 * d), Vector2(cx + 3, y + 11 * d), Vector2(cx, y + 18 * d)]), GREY_DARK)
+
+
+func _doodle(p: Vector2, kind: int) -> void:
+	var c := Color(BLUE_DARK, 0.3)
+	match kind:
+		0:
+			var pts := PackedVector2Array()
+			for i in 11:
+				var r := 8.0 if i % 2 == 0 else 3.5
+				pts.append(p + Vector2.from_angle(-PI / 2.0 + i * PI / 5.0) * r)
+			draw_polyline(pts, c, 1.5)
+		1:
+			draw_arc(p, 8, 0, TAU, 16, c, 1.5)
+			draw_rect(Rect2(p + Vector2(-3, -3), Vector2(2, 2)), c)
+			draw_rect(Rect2(p + Vector2(2, -3), Vector2(2, 2)), c)
+			draw_arc(p + Vector2(0, 1), 4, 0.3, PI - 0.3, 8, c, 1.5)
+		2:
+			_text("A+", p, 14, c, true)
+		3:
+			draw_line(p + Vector2(-8, 0), p + Vector2(8, 0), c, 1.5)
+			draw_line(p + Vector2(3, -5), p + Vector2(8, 0), c, 1.5)
+			draw_line(p + Vector2(3, 5), p + Vector2(8, 0), c, 1.5)
+		4:
+			draw_arc(p, 6, 0, TAU, 12, c, 1.5)
+			draw_arc(p + Vector2(8, 0), 6, 0, TAU, 12, c, 1.5)
+
+
+func _draw_menu() -> void:
+	var bob := sin(t * 2.0) * 3.0
+	_text("PAPER PILOT", Vector2(W / 2.0 + 3, 100 + bob + 3), 48, Color(INK, 0.25), true)
+	_text("PAPER PILOT", Vector2(W / 2.0, 100 + bob), 48, RED, true, 4)
+	var r := Rect2(W / 2.0 - 75, 165, 150, 44)
+	var pulse := 1.0 + sin(t * 5.0) * 0.04
+	var rr := Rect2(r.get_center() - r.size * pulse / 2.0, r.size * pulse)
+	draw_rect(rr.grow(3), INK)
+	draw_rect(rr, YELLOW)
+	draw_rect(Rect2(rr.position, Vector2(rr.size.x, 4)), Color(1, 1, 1, 0.5))
+	_text("START", rr.get_center() + Vector2(0, 10), 28, INK, true)
+
+
+func _draw_over() -> void:
+	var a := clampf(over_t * 3.0, 0.0, 1.0)
+	var r := Rect2(W / 2.0 - 110, 50, 220, 160)
+	draw_rect(r.grow(3), Color(INK, a))
+	draw_rect(r, Color(WHITE, a))
+	for i in 6:
+		draw_rect(Rect2(r.position.x, r.position.y + 30 + i * 22, r.size.x, 1), Color(RULE, a))
+	_text("CRASHED!", Vector2(W / 2.0, 84), 30, Color(RED, a), true)
+	_text("SCORE", Vector2(W / 2.0 - 50, 116), 12, Color(GREY_DARK, a), true)
+	_text(str(score), Vector2(W / 2.0 - 50, 146), 30, Color(INK, a), true)
+	_text("BEST", Vector2(W / 2.0 + 50, 116), 12, Color(GREY_DARK, a), true)
+	_text(str(best), Vector2(W / 2.0 + 50, 146), 30, Color(INK, a), true)
+	if new_best:
+		_text("NEW BEST!", Vector2(W / 2.0, 170), 16, Color(ORANGE, a * (0.6 + 0.4 * sin(t * 8.0))), true)
+	if over_t > 0.6:
+		_text("click or space to fly again", Vector2(W / 2.0, 198), 12, Color(BLUE_DARK, 0.6 + 0.4 * sin(t * 4.0)), true)
+
+
+func _score_box() -> void:
+	_text(str(score), Vector2(W / 2.0, 44), 36, WHITE, true, 5)
+
+
+func _banner(title: String, sub: String) -> void:
+	_text(title, Vector2(W / 2.0, 92), 28, BLUE_DARK, true, 3, WHITE)
+	_text(sub, Vector2(W / 2.0, 200), 12, GREY_DARK, true)
+
+
+func _text(s: String, pos: Vector2, size: int, col: Color, center: bool = false, outline: int = 0, outline_col: Color = INK) -> void:
+	var w := font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var p := pos
+	if center:
+		p.x -= w / 2.0
+	if outline > 0:
+		draw_string_outline(font, p, s, HORIZONTAL_ALIGNMENT_LEFT, -1, size, outline, Color(outline_col, col.a))
+	draw_string(font, p, s, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+
+
+func _make_sounds() -> void:
+	snd.flap = _tone(500.0, 900.0, 0.08, "square", 0.12)
+	snd.point = _tone(880.0, 1320.0, 0.09, "square", 0.1)
+	snd.level = _tone(660.0, 1760.0, 0.35, "square", 0.12)
+	snd.crash = _tone(300.0, 60.0, 0.45, "noise", 0.4)
+	for i in 6:
+		var a := AudioStreamPlayer.new()
+		add_child(a)
+		players.append(a)
+
+
+func _tone(f0: float, f1: float, dur: float, wave: String, vol: float) -> AudioStreamWAV:
+	var rate := 22050
+	var n := int(rate * dur)
+	var bytes := PackedByteArray()
+	bytes.resize(n * 2)
+	var phase := 0.0
+	for i in n:
+		var k := float(i) / n
+		phase += TAU * lerpf(f0, f1, k) / rate
+		var s := 0.0
+		if wave == "square":
+			s = 1.0 if sin(phase) > 0.0 else -1.0
+		else:
+			s = randf_range(-1.0, 1.0) * (0.6 + 0.4 * sin(phase))
+		s *= vol * (1.0 - k) * minf(1.0, i / 120.0)
+		bytes.encode_s16(i * 2, int(clampf(s, -1.0, 1.0) * 32767.0))
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.data = bytes
+	return w
+
+
+func _play(name: String, pitch: float) -> void:
+	for a: AudioStreamPlayer in players:
+		if not a.playing:
+			a.stream = snd[name]
+			a.pitch_scale = pitch
+			a.play()
+			return
+
+
+func _load_best() -> void:
+	var cf := ConfigFile.new()
+	if cf.load("user://paper_pilot.save") == OK:
+		best = cf.get_value("score", "best", 0)
+
+
+func _save_best() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("score", "best", best)
+	cf.save("user://paper_pilot.save")
