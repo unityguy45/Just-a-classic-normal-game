@@ -6,6 +6,7 @@ const PLANE_X := 130.0
 const GRAVITY := 900.0
 const FLAP := -290.0
 const PENCIL_W := 24.0
+const EDGE := 32.0
 
 const PAPER := Color("f4efe1")
 const RULE := Color("bcd4f0")
@@ -51,6 +52,11 @@ var fogging := false
 var fog_amt := 0.0
 var msg := ""
 var pending := ""
+var massing := false
+var mass_amt := 0.0
+var erasers: Array = []
+var eraser_t := 0.0
+var since_riser := 0.0
 var msg_t := 0.0
 
 
@@ -89,6 +95,11 @@ func _reset() -> void:
 	msg_t = 0.0
 	crash_rot = 0.0
 	pencils.clear()
+	massing = false
+	mass_amt = 0.0
+	erasers.clear()
+	eraser_t = 1.5
+	since_riser = 0.0
 	var x := W + 40.0
 	while x < W * 2.2:
 		_add_pencil(x)
@@ -117,7 +128,7 @@ func _add_pencil(x: float) -> void:
 	var c := clampf(last + randf_range(-wiggle, wiggle), m, H - m)
 	var col: Color = [YELLOW, BLUE, PINK, LIME, ORANGE].pick_random()
 	var moving := score >= 15 and randf() < minf(0.15 + (score - 15) * 0.02, 0.5)
-	pencils.append([x, c, g, false, col, moving, randf() * TAU])
+	pencils.append([x, c, g, false, col, moving, randf() * TAU, 0, 0, 0.0, 0.0])
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -189,6 +200,8 @@ func _process(delta: float) -> void:
 	rain_amt = move_toward(rain_amt, target, delta * 0.6)
 	var ftarget := 1.0 if fogging and (state == "play" or state == "over") else 0.0
 	fog_amt = move_toward(fog_amt, ftarget, delta * 0.5)
+	var mtarget := 1.0 if massing and (state == "play" or state == "over") else 0.0
+	mass_amt = move_toward(mass_amt, mtarget, delta * 1.5)
 	if rain_amt > 0.0:
 		var want := int(rain_amt * 140.0)
 		while drops.size() < want:
@@ -230,8 +243,18 @@ func _update_play(delta: float, sp: float) -> void:
 		p[0] -= sp * delta
 		if p[5]:
 			p[6] += delta * 1.6
-	if pencils.back()[0] < W + 40:
-		_add_pencil(pencils.back()[0] + _spacing())
+		if p[7] == 2 and p[0] < PLANE_X + 230:
+			p[9] = move_toward(p[9], p[10], 170.0 * delta)
+	while pencils.back()[0] < W + 40:
+		var last: Array = pencils.back()
+		if massing:
+			if last[7] == 0:
+				_add_row(last[0] + _spacing())
+			else:
+				_add_row(last[0] + PENCIL_W + 2)
+		else:
+			_add_pencil(last[0] + (_spacing() if last[7] == 0 else _spacing() + 20))
+	_update_erasers(delta, sp)
 	if pencils[0][0] < -60:
 		pencils.pop_front()
 	vel += GRAVITY * (1.0 + 0.5 * rain_amt) * delta
@@ -240,6 +263,8 @@ func _update_play(delta: float, sp: float) -> void:
 	for p in pencils:
 		if not p[3] and p[0] + PENCIL_W < PLANE_X - 10:
 			p[3] = true
+			if p[7] == 1:
+				continue
 			score += 1
 			_play("point", 1.0 + (score % 5) * 0.06)
 			pops.append([Vector2(PLANE_X, plane_y - 20), "+1", 0.6])
@@ -255,6 +280,48 @@ func _update_play(delta: float, sp: float) -> void:
 		if _hit(p):
 			_crash()
 			return
+	for e in erasers:
+		if e[4] <= 0.0 and e[0].distance_to(Vector2(PLANE_X, plane_y)) < 13.0:
+			_crash()
+			return
+
+
+func _add_row(x: float) -> void:
+	var col: Color = [YELLOW, BLUE, PINK, LIME, ORANGE].pick_random()
+	since_riser += PENCIL_W + 2
+	var kind := 1
+	var side := 0
+	var ext := 0.0
+	if since_riser > 120.0 and (randf() < 0.14 or since_riser > 240.0):
+		kind = 2
+		side = 1 if randf() < 0.5 else -1
+		ext = randf_range(60.0, 125.0)
+		since_riser = 0.0
+	pencils.append([x, H / 2.0, H - EDGE * 2.0, false, col, false, 0.0, kind, side, 0.0, ext])
+
+
+func _update_erasers(delta: float, sp: float) -> void:
+	if massing:
+		eraser_t -= delta
+		if eraser_t <= 0.0:
+			eraser_t = randf_range(0.9, 1.6)
+			_spawn_eraser()
+	for e in erasers:
+		if e[4] > 0.0:
+			e[4] -= delta
+			continue
+		e[0] += e[1] * delta
+		e[2] += e[3] * delta
+	erasers = erasers.filter(func(e): return e[4] > 0.0 or (e[0].x > -40 and e[0].x < W + 60))
+
+
+func _spawn_eraser() -> void:
+	var start := Vector2(W + 15, randf_range(EDGE + 15, H - EDGE - 15))
+	var aim := Vector2(PLANE_X, clampf(plane_y + randf_range(-60, 60), EDGE + 15, H - EDGE - 15))
+	var dir := (aim - start).normalized()
+	var k := (start.x + 40.0) / maxf(-dir.x, 0.2)
+	var finish := start + dir * k
+	erasers.append([start, dir * randf_range(260, 320), dir.angle(), randf_range(-8, 8), 0.9, start, finish])
 
 
 func _rain_check() -> void:
@@ -262,17 +329,31 @@ func _rain_check() -> void:
 		rain_left = randi_range(5, 15)
 		if pending == "rain":
 			raining = true
-		else:
+		elif pending == "fog":
 			fogging = true
+		else:
+			massing = true
+			since_riser = 0.0
+			rain_left = randi_range(8, 12)
+			flash = 1.0
+			shake = 0.4
 		pending = ""
 		return
-	if raining or fogging:
+	var nxt := score + 1
+	if nxt == 50 and not massing:
+		raining = false
+		fogging = false
+		pending = "mass"
+		msg = "Everything snaps into line..."
+		msg_t = 3.5
+		return
+	if raining or fogging or massing:
 		rain_left -= 1
 		if rain_left <= 0:
 			raining = false
 			fogging = false
+			massing = false
 		return
-	var nxt := score + 1
 	if nxt == 10:
 		pending = "rain"
 	elif nxt > 10 and (nxt - 10) % 9 == 0 and randf() < 0.1:
@@ -287,6 +368,19 @@ func _rain_check() -> void:
 		msg_t = 3.5
 
 
+func _bounds(p: Array) -> Vector2:
+	if p[7] != 0:
+		var top := EDGE
+		var bot := H - EDGE
+		if p[8] == -1:
+			top += p[9]
+		elif p[8] == 1:
+			bot -= p[9]
+		return Vector2(top, bot)
+	var c := _gap_center(p)
+	return Vector2(c - p[2] / 2.0, c + p[2] / 2.0)
+
+
 func _gap_center(p: Array) -> float:
 	if p[5]:
 		var m: float = p[2] / 2.0 + 18.0
@@ -298,9 +392,9 @@ func _hit(p: Array) -> bool:
 	var px: float = p[0]
 	if PLANE_X + 11 < px + 2 or PLANE_X - 11 > px + PENCIL_W - 2:
 		return false
-	var c := _gap_center(p)
-	var top: float = c - p[2] / 2.0
-	var bot: float = c + p[2] / 2.0
+	var b := _bounds(p)
+	var top: float = b.x
+	var bot: float = b.y
 	return plane_y - 5 < top or plane_y + 5 > bot
 
 
@@ -340,6 +434,11 @@ func _draw() -> void:
 	for p in parts:
 		var a: float = p[2] / p[3]
 		draw_rect(Rect2(p[0] - Vector2.ONE * p[5] / 2.0, Vector2.ONE * p[5]), Color(p[4], a))
+	for e in erasers:
+		if e[4] > 0.0:
+			_warn_path(e)
+		else:
+			_eraser(e[0], e[2])
 	_plane(Vector2(PLANE_X, plane_y) + so)
 	if rain_amt > 0.0:
 		draw_rect(Rect2(-20, -20, W + 40, H + 40), Color(0.2, 0.25, 0.35, 0.22 * rain_amt))
@@ -398,9 +497,9 @@ func _plane(base: Vector2) -> void:
 
 func _pencil(p: Array) -> void:
 	var x: float = p[0]
-	var c := _gap_center(p)
-	var top: float = floor(c - p[2] / 2.0)
-	var bot: float = floor(c + p[2] / 2.0)
+	var b := _bounds(p)
+	var top: float = floor(b.x)
+	var bot: float = floor(b.y)
 	var col: Color = p[4]
 	_pencil_body(x, -20.0, top - 18, col)
 	_pencil_tip(x, top - 18, 1)
@@ -409,6 +508,29 @@ func _pencil(p: Array) -> void:
 	if p[5]:
 		draw_rect(Rect2(x + 6, top - 40, 12, 3), Color(INK, 0.3))
 		draw_rect(Rect2(x + 6, bot + 37, 12, 3), Color(INK, 0.3))
+
+
+func _warn_path(e: Array) -> void:
+	var s0: Vector2 = e[5]
+	var s1: Vector2 = e[6]
+	var n := (s1 - s0).normalized().orthogonal() * 9.0
+	var blink := 0.55 + 0.45 * sin(t * 18.0)
+	var pts := PackedVector2Array([s0 + n, s1 + n, s1 - n, s0 - n])
+	draw_colored_polygon(pts, Color(RED, 0.12 * blink))
+	pts.append(s0 + n)
+	draw_polyline(pts, Color(RED, 0.9 * blink), 2.0)
+
+
+func _eraser(c: Vector2, rot: float) -> void:
+	_quad(c, Vector2(20, 11), rot, INK)
+	_quad(c, Vector2(17, 8), rot, PINK)
+	_quad(c + Vector2(4, 0).rotated(rot), Vector2(7, 8), rot, BLUE)
+
+
+func _quad(c: Vector2, size: Vector2, rot: float, col: Color) -> void:
+	var hx := Vector2(size.x / 2.0, 0).rotated(rot)
+	var hy := Vector2(0, size.y / 2.0).rotated(rot)
+	draw_colored_polygon(PackedVector2Array([c - hx - hy, c + hx - hy, c + hx + hy, c - hx + hy]), col)
 
 
 func _pencil_body(x: float, y0: float, y1: float, col: Color) -> void:
@@ -517,7 +639,7 @@ func _caption() -> void:
 
 
 func _scenario_box() -> void:
-	var amt := maxf(rain_amt, fog_amt)
+	var amt := maxf(maxf(rain_amt, fog_amt), mass_amt)
 	if amt <= 0.0:
 		return
 	var a := clampf(amt * 1.5, 0.0, 1.0)
@@ -528,7 +650,12 @@ func _scenario_box() -> void:
 	draw_rect(Rect2(r.position, Vector2(5, r.size.y)), Color(0.3, 0.5, 0.85, a))
 	var blink := 0.8 + 0.2 * sin(t * 6.0)
 	_text("SCENARIO ACTIVE", r.position + Vector2(64, 17), 11, Color(RED, a * blink), true)
-	_text("FOG" if fog_amt > rain_amt else "RAIN", r.position + Vector2(64, 35), 14, Color(INK, a), true)
+	var label := "RAIN"
+	if mass_amt > 0.0:
+		label = "MASS RESET"
+	elif fog_amt > rain_amt:
+		label = "FOG"
+	_text(label, r.position + Vector2(64, 35), 14, Color(INK, a), true)
 
 
 func _score_box() -> void:
