@@ -23,6 +23,10 @@ const PINK := Color("ff6f9c")
 const LIME := Color("8ee05a")
 const ORANGE := Color("ff8a3d")
 const WOOD := Color("e0a068")
+const SKINS := [["Classic", 0, "fff7e8", "a9c4e8", "e84a5f"], ["Sky", 40, "bfe3ff", "6fa8dc", "2e5aa8"], ["Lemon", 60, "fff3a8", "ffd23f", "ff8a3d"], ["Mint", 80, "d4f7d0", "8ee05a", "2f8f5b"], ["Candy", 120, "ffd6e6", "ff6f9c", "fff7e8"], ["Midnight", 160, "3a3556", "1a1423", "ffd23f"], ["Gold", 250, "ffe58a", "e0a830", "fff7e8"], ["Rainbow", 400, "", "", ""]]
+const SHOP_X := 25.0
+const SHOP_Y := 52.0
+const TILE := Vector2(100, 78)
 
 var state := "menu"
 var plane_y := H / 2.0
@@ -52,6 +56,13 @@ var fogging := false
 var fog_amt := 0.0
 var msg := ""
 var pending := ""
+var cash := 0
+var run_cash := 0
+var owned: Array = [0]
+var skin := 0
+var coin_pops: Array = []
+var shop_msg := ""
+var shop_msg_t := 0.0
 var massing := false
 var mass_amt := 0.0
 var erasers: Array = []
@@ -85,6 +96,7 @@ func _reset() -> void:
 	vel = 0.0
 	score = 0
 	new_best = false
+	run_cash = 0
 	raining = false
 	rain_left = 0
 	rain_amt = 0.0
@@ -138,6 +150,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			var fs := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if fs else DisplayServer.WINDOW_MODE_FULLSCREEN)
 			return
+		if e.keycode == KEY_ESCAPE and state == "shop":
+			state = "menu"
+			return
 		if e.keycode == KEY_ESCAPE or e.keycode == KEY_P:
 			if state == "play":
 				paused = not paused
@@ -151,9 +166,18 @@ func _unhandled_input(e: InputEvent) -> void:
 	if paused:
 		paused = false
 		return
+	var mp := get_global_mouse_position()
+	var clicked: bool = e is InputEventMouseButton
 	match state:
 		"menu":
-			_start()
+			if clicked and _shop_btn().has_point(mp):
+				state = "shop"
+				_play("point", 1.0)
+			elif not clicked or _start_btn().has_point(mp):
+				_start()
+		"shop":
+			if clicked:
+				_shop_click(mp)
 		"ready":
 			state = "play"
 			_flap()
@@ -235,6 +259,11 @@ func _process(delta: float) -> void:
 		p[0].y -= 30.0 * delta
 		p[2] -= delta
 	pops = pops.filter(func(p): return p[2] > 0.0)
+	for c in coin_pops:
+		c[0].y -= 22.0 * delta
+		c[2] -= delta
+	coin_pops = coin_pops.filter(func(c): return c[2] > 0.0)
+	shop_msg_t = maxf(0.0, shop_msg_t - delta)
 	queue_redraw()
 
 
@@ -269,6 +298,7 @@ func _update_play(delta: float, sp: float) -> void:
 			_play("point", 1.0 + (score % 5) * 0.06)
 			pops.append([Vector2(PLANE_X, plane_y - 20), "+1", 0.6])
 			if score % 10 == 0:
+				_earn(5)
 				flash = 1.0
 				_play("level", 1.0)
 				pops.append([Vector2(W / 2.0, H / 2.0 - 40), "%d!" % score, 1.0])
@@ -350,6 +380,10 @@ func _rain_check() -> void:
 	if raining or fogging or massing:
 		rain_left -= 1
 		if rain_left <= 0:
+			if massing:
+				_earn(25)
+			else:
+				_earn(10)
 			raining = false
 			fogging = false
 			massing = false
@@ -410,7 +444,7 @@ func _crash() -> void:
 	if score > best:
 		best = score
 		new_best = true
-		_save_best()
+	_save_best()
 
 
 func _draw() -> void:
@@ -439,7 +473,8 @@ func _draw() -> void:
 			_warn_path(e)
 		else:
 			_eraser(e[0], e[2])
-	_plane(Vector2(PLANE_X, plane_y) + so)
+	if state != "shop":
+		_plane(Vector2(PLANE_X, plane_y) + so)
 	if rain_amt > 0.0:
 		draw_rect(Rect2(-20, -20, W + 40, H + 40), Color(0.2, 0.25, 0.35, 0.22 * rain_amt))
 		for d in drops:
@@ -450,6 +485,10 @@ func _draw() -> void:
 	draw_set_transform(Vector2.ZERO)
 	for p in pops:
 		_text(p[1], p[0], 16 if p[1] == "+1" else 32, BLUE_DARK, true)
+	for c in coin_pops:
+		var ca := clampf(c[2], 0.0, 1.0)
+		_coin(c[0] + Vector2(-16, -5), 6.0, ca)
+		_text(c[1], c[0] + Vector2(6, 0), 16, Color(ORANGE, ca), true, 3, Color(INK, ca))
 	if flash > 0.0:
 		draw_rect(Rect2(0, 0, W, H), Color(1, 1, 1, flash * 0.25))
 	match state:
@@ -458,8 +497,11 @@ func _draw() -> void:
 		"ready":
 			_score_box()
 			_banner("GET READY", "tap, click or press space to flap")
+		"shop":
+			_draw_shop()
 		"play":
 			_score_box()
+			_cash_box()
 			_scenario_box()
 			_caption()
 		"over":
@@ -488,10 +530,38 @@ func _plane(base: Vector2) -> void:
 		draw_colored_polygon(top, INK)
 		draw_colored_polygon(under, INK)
 	draw_set_transform(base, rot)
-	draw_colored_polygon(top, WHITE)
-	draw_colored_polygon(under, Color("a9c4e8"))
-	draw_line(Vector2(-12, -7), Vector2(7, -2), RED, 3)
+	_plane_paint(skin)
+	draw_set_transform(Vector2.ZERO)
+
+
+func _plane_paint(id: int) -> void:
+	var top := PackedVector2Array([Vector2(18, 0), Vector2(-15, -13), Vector2(-7, 0)])
+	var under := PackedVector2Array([Vector2(18, 0), Vector2(-7, 0), Vector2(-15, 10)])
+	var cols := _skin_cols(id)
+	draw_colored_polygon(top, cols[0])
+	draw_colored_polygon(under, cols[1])
+	draw_line(Vector2(-12, -7), Vector2(7, -2), cols[2], 3)
 	draw_line(Vector2(17, 0), Vector2(-7, 0), GREY_DARK, 1.5)
+
+
+func _skin_cols(id: int) -> Array:
+	var sk: Array = SKINS[id]
+	if sk[2] == "":
+		var h := fposmod(t * 0.4, 1.0)
+		return [Color.from_hsv(h, 0.35, 1.0), Color.from_hsv(fposmod(h + 0.33, 1.0), 0.6, 0.95), Color.from_hsv(fposmod(h + 0.66, 1.0), 0.8, 0.95)]
+	return [Color(sk[2]), Color(sk[3]), Color(sk[4])]
+
+
+func _plane_preview(base: Vector2, id: int, sc: float) -> void:
+	var top := PackedVector2Array([Vector2(18, 0), Vector2(-15, -13), Vector2(-7, 0)])
+	var under := PackedVector2Array([Vector2(18, 0), Vector2(-7, 0), Vector2(-15, 10)])
+	var rot := sin(t * 2.0 + id) * 0.08
+	for o in [Vector2(-1.5, 0), Vector2(1.5, 0), Vector2(0, -1.5), Vector2(0, 1.5)]:
+		draw_set_transform(base + o, rot, Vector2(sc, sc))
+		draw_colored_polygon(top, INK)
+		draw_colored_polygon(under, INK)
+	draw_set_transform(base, rot, Vector2(sc, sc))
+	_plane_paint(id)
 	draw_set_transform(Vector2.ZERO)
 
 
@@ -580,22 +650,116 @@ func _doodle(p: Vector2, kind: int) -> void:
 			draw_arc(p + Vector2(8, 0), 6, 0, TAU, 12, c, 1.5)
 
 
+func _earn(n: int) -> void:
+	cash += n
+	run_cash += n
+	coin_pops.append([Vector2(PLANE_X + 30, plane_y - 30), "+%d" % n, 1.2])
+	_play("level", 1.4)
+	_save_best()
+
+
+func _coin(c: Vector2, r: float, a: float) -> void:
+	draw_circle(c, r + 1.5, Color(INK, a))
+	draw_circle(c, r, Color(YELLOW, a))
+	draw_circle(c, r * 0.55, Color(ORANGE, a * 0.6))
+
+
+func _cash_box() -> void:
+	_coin(Vector2(18, 18), 7.0, 1.0)
+	_text(str(cash), Vector2(30, 24), 16, WHITE, false, 3)
+
+
+func _start_btn() -> Rect2:
+	return Rect2(W / 2.0 - 75, 150, 150, 40)
+
+
+func _shop_btn() -> Rect2:
+	return Rect2(W / 2.0 - 55, 202, 110, 30)
+
+
+func _back_btn() -> Rect2:
+	return Rect2(W / 2.0 - 50, 234, 100, 28)
+
+
+func _tile(i: int) -> Rect2:
+	return Rect2(Vector2(SHOP_X + (i % 4) * (TILE.x + 10), SHOP_Y + int(i / 4) * (TILE.y + 8)), TILE)
+
+
+func _shop_click(mp: Vector2) -> void:
+	if _back_btn().has_point(mp):
+		state = "menu"
+		_play("point", 0.9)
+		return
+	for i in SKINS.size():
+		if not _tile(i).has_point(mp):
+			continue
+		if i in owned:
+			skin = i
+			_play("point", 1.2)
+		elif cash >= SKINS[i][1]:
+			cash -= SKINS[i][1]
+			owned.append(i)
+			skin = i
+			_play("level", 1.0)
+			shop_msg = "Unlocked " + SKINS[i][0] + "!"
+			shop_msg_t = 1.5
+		else:
+			_play("crash", 1.8)
+			shop_msg = "Not enough cash"
+			shop_msg_t = 1.2
+		_save_best()
+		return
+
+
+func _button(r: Rect2, label: String, col: Color, size: int) -> void:
+	draw_rect(r.grow(3), INK)
+	draw_rect(r, col)
+	draw_rect(Rect2(r.position, Vector2(r.size.x, 4)), Color(1, 1, 1, 0.5))
+	_text(label, r.get_center() + Vector2(0, size * 0.36), size, INK, true)
+
+
+func _draw_shop() -> void:
+	draw_rect(Rect2(0, 0, W, H), Color(PAPER, 0.85))
+	_text("SHOP", Vector2(W / 2.0, 36), 30, RED, true, 3)
+	_coin(Vector2(W - 70, 24), 7.0, 1.0)
+	_text(str(cash), Vector2(W - 58, 30), 16, INK, false)
+	for i in SKINS.size():
+		var r := _tile(i)
+		var sel := i == skin
+		draw_rect(r.grow(3 if sel else 2), RED if sel else INK)
+		draw_rect(r, WHITE)
+		_plane_preview(r.position + Vector2(r.size.x / 2.0, 26), i, 1.2)
+		_text(SKINS[i][0], r.position + Vector2(r.size.x / 2.0, 54), 13, INK, true)
+		if sel:
+			_text("EQUIPPED", r.position + Vector2(r.size.x / 2.0, 70), 11, RED, true)
+		elif i in owned:
+			_text("OWNED", r.position + Vector2(r.size.x / 2.0, 70), 11, BLUE_DARK, true)
+		else:
+			var can: bool = cash >= SKINS[i][1]
+			_coin(r.position + Vector2(r.size.x / 2.0 - 16, 66), 5.0, 1.0)
+			_text(str(SKINS[i][1]), r.position + Vector2(r.size.x / 2.0 + 4, 71), 12, INK if can else GREY, true)
+	_button(_back_btn(), "BACK", YELLOW, 16)
+	if shop_msg_t > 0.0:
+		_text(shop_msg, Vector2(W / 2.0, 225), 12, Color(ORANGE, clampf(shop_msg_t * 2.0, 0.0, 1.0)), true, 3)
+
+
 func _draw_menu() -> void:
 	var bob := sin(t * 2.0) * 3.0
 	_text("PAPER PILOT", Vector2(W / 2.0 + 3, 100 + bob + 3), 48, Color(INK, 0.25), true)
 	_text("PAPER PILOT", Vector2(W / 2.0, 100 + bob), 48, RED, true, 4)
-	var r := Rect2(W / 2.0 - 75, 165, 150, 44)
+	var r := _start_btn()
 	var pulse := 1.0 + sin(t * 5.0) * 0.04
 	var rr := Rect2(r.get_center() - r.size * pulse / 2.0, r.size * pulse)
 	draw_rect(rr.grow(3), INK)
 	draw_rect(rr, YELLOW)
 	draw_rect(Rect2(rr.position, Vector2(rr.size.x, 4)), Color(1, 1, 1, 0.5))
 	_text("START", rr.get_center() + Vector2(0, 10), 28, INK, true)
+	_button(_shop_btn(), "SHOP", BLUE, 18)
 
 
 func _draw_over() -> void:
 	var a := clampf(over_t * 3.0, 0.0, 1.0)
-	var r := Rect2(W / 2.0 - 110, 50, 220, 160)
+	var r := Rect2(W / 2.0 - 110, 46, 220, 180)
 	draw_rect(r.grow(3), Color(INK, a))
 	draw_rect(r, Color(WHITE, a))
 	for i in 6:
@@ -607,8 +771,10 @@ func _draw_over() -> void:
 	_text(str(best), Vector2(W / 2.0 + 50, 146), 30, Color(INK, a), true)
 	if new_best:
 		_text("NEW BEST!", Vector2(W / 2.0, 170), 16, Color(ORANGE, a * (0.6 + 0.4 * sin(t * 8.0))), true)
+	_coin(Vector2(W / 2.0 - 30, 188), 6.0, a)
+	_text("+%d cash" % run_cash, Vector2(W / 2.0 + 8, 193), 14, Color(INK, a), true)
 	if over_t > 0.6:
-		_text("click or space to fly again", Vector2(W / 2.0, 198), 12, Color(BLUE_DARK, 0.6 + 0.4 * sin(t * 4.0)), true)
+		_text("click or space to fly again", Vector2(W / 2.0, 214), 12, Color(BLUE_DARK, 0.6 + 0.4 * sin(t * 4.0)), true)
 
 
 func _draw_fog() -> void:
@@ -724,9 +890,17 @@ func _load_best() -> void:
 	var cf := ConfigFile.new()
 	if cf.load("user://paper_pilot.save") == OK:
 		best = cf.get_value("score", "best", 0)
+		cash = cf.get_value("shop", "cash", 0)
+		owned = cf.get_value("shop", "owned", [0])
+		skin = cf.get_value("shop", "skin", 0)
+		if skin < 0 or skin >= SKINS.size() or not skin in owned:
+			skin = 0
 
 
 func _save_best() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("score", "best", best)
+	cf.set_value("shop", "cash", cash)
+	cf.set_value("shop", "owned", owned)
+	cf.set_value("shop", "skin", skin)
 	cf.save("user://paper_pilot.save")
