@@ -47,6 +47,11 @@ var raining := false
 var rain_left := 0
 var rain_amt := 0.0
 var drops: Array = []
+var fogging := false
+var fog_amt := 0.0
+var msg := ""
+var pending := ""
+var msg_t := 0.0
 
 
 func _ready() -> void:
@@ -77,6 +82,11 @@ func _reset() -> void:
 	raining = false
 	rain_left = 0
 	rain_amt = 0.0
+	fogging = false
+	fog_amt = 0.0
+	msg = ""
+	pending = ""
+	msg_t = 0.0
 	crash_rot = 0.0
 	pencils.clear()
 	var x := W + 40.0
@@ -162,6 +172,8 @@ func _process(delta: float) -> void:
 	t += delta
 	shake = maxf(0.0, shake - delta * 2.5)
 	flash = maxf(0.0, flash - delta * 3.0)
+	if not paused:
+		msg_t = maxf(0.0, msg_t - delta)
 	if paused:
 		queue_redraw()
 		return
@@ -175,6 +187,8 @@ func _process(delta: float) -> void:
 	if state == "over" and raining:
 		target = 1.0
 	rain_amt = move_toward(rain_amt, target, delta * 0.6)
+	var ftarget := 1.0 if fogging and (state == "play" or state == "over") else 0.0
+	fog_amt = move_toward(fog_amt, ftarget, delta * 0.5)
 	if rain_amt > 0.0:
 		var want := int(rain_amt * 140.0)
 		while drops.size() < want:
@@ -244,20 +258,33 @@ func _update_play(delta: float, sp: float) -> void:
 
 
 func _rain_check() -> void:
-	if raining:
+	if pending != "":
+		rain_left = randi_range(5, 15)
+		if pending == "rain":
+			raining = true
+		else:
+			fogging = true
+		pending = ""
+		return
+	if raining or fogging:
 		rain_left -= 1
 		if rain_left <= 0:
 			raining = false
+			fogging = false
 		return
-	var start := false
-	if score == 10:
-		start = true
-	elif score > 10 and (score - 10) % 13 == 0 and randf() < 0.1:
-		start = true
-	if start:
-		raining = true
-		rain_left = randi_range(5, 15)
-		pops.append([Vector2(W / 2.0, H / 2.0 + 10), "RAIN!", 1.2])
+	var nxt := score + 1
+	if nxt == 10:
+		pending = "rain"
+	elif nxt > 10 and (nxt - 10) % 9 == 0 and randf() < 0.1:
+		pending = "fog"
+	elif nxt > 10 and (nxt - 10) % 13 == 0 and randf() < 0.1:
+		pending = "rain"
+	if pending == "rain":
+		msg = "The skies grow darker..."
+		msg_t = 3.5
+	elif pending == "fog":
+		msg = "A fog is visible in the distance..."
+		msg_t = 3.5
 
 
 func _gap_center(p: Array) -> float:
@@ -319,6 +346,8 @@ func _draw() -> void:
 		for d in drops:
 			var dp: Vector2 = d[0]
 			draw_line(dp, dp + Vector2(-d[2] * 0.3, d[2]), Color(0.45, 0.6, 0.85, 0.7 * rain_amt), 1.5)
+	if fog_amt > 0.0:
+		_draw_fog()
 	draw_set_transform(Vector2.ZERO)
 	for p in pops:
 		_text(p[1], p[0], 16 if p[1] == "+1" else 32, BLUE_DARK, true)
@@ -333,6 +362,7 @@ func _draw() -> void:
 		"play":
 			_score_box()
 			_scenario_box()
+			_caption()
 		"over":
 			_draw_over()
 	if paused:
@@ -459,10 +489,38 @@ func _draw_over() -> void:
 		_text("click or space to fly again", Vector2(W / 2.0, 198), 12, Color(BLUE_DARK, 0.6 + 0.4 * sin(t * 4.0)), true)
 
 
-func _scenario_box() -> void:
-	if rain_amt <= 0.0:
+func _draw_fog() -> void:
+	var fc := Color(0.74, 0.77, 0.82)
+	draw_rect(Rect2(-20, -20, W + 40, H + 40), Color(fc, 0.3 * fog_amt))
+	var x0 := PLANE_X + 190.0
+	var x1 := PLANE_X + 260.0
+	var strips := 20
+	var sw := (x1 - x0) / strips
+	for i in strips:
+		var k := float(i + 1) / strips
+		draw_rect(Rect2(x0 + i * sw, -20, sw + 1, H + 40), Color(fc, k * fog_amt))
+	draw_rect(Rect2(x1, -20, W + 40 - x1, H + 40), Color(fc, fog_amt))
+	for i in 7:
+		var bx := fposmod(i * 97.0 - t * 22.0, W + 160.0) - 80.0
+		var by := 30.0 + fposmod(i * 61.0, H - 60.0) + sin(t * 0.7 + i) * 10.0
+		draw_circle(Vector2(bx, by), 46.0 + (i % 3) * 14.0, Color(fc, 0.25 * fog_amt))
+
+
+func _caption() -> void:
+	if msg_t <= 0.0 or msg == "":
 		return
-	var a := clampf(rain_amt * 1.5, 0.0, 1.0)
+	var a := clampf(minf(msg_t, 3.5 - msg_t) * 2.0, 0.0, 1.0)
+	var w := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
+	var r := Rect2(W / 2.0 - w / 2.0 - 14, H - 40, w + 28, 28)
+	draw_rect(r, Color(INK, 0.55 * a))
+	_text(msg, Vector2(W / 2.0, H - 20), 16, Color(WHITE, a), true)
+
+
+func _scenario_box() -> void:
+	var amt := maxf(rain_amt, fog_amt)
+	if amt <= 0.0:
+		return
+	var a := clampf(amt * 1.5, 0.0, 1.0)
 	var slide := (1.0 - a) * 140.0
 	var r := Rect2(W - 132 + slide, 12, 120, 44)
 	draw_rect(r.grow(2), Color(INK, a))
@@ -470,7 +528,7 @@ func _scenario_box() -> void:
 	draw_rect(Rect2(r.position, Vector2(5, r.size.y)), Color(0.3, 0.5, 0.85, a))
 	var blink := 0.8 + 0.2 * sin(t * 6.0)
 	_text("SCENARIO ACTIVE", r.position + Vector2(64, 17), 11, Color(RED, a * blink), true)
-	_text("RAIN", r.position + Vector2(64, 35), 14, Color(INK, a), true)
+	_text("FOG" if fog_amt > rain_amt else "RAIN", r.position + Vector2(64, 35), 14, Color(INK, a), true)
 
 
 func _score_box() -> void:
