@@ -27,6 +27,17 @@ const SKINS := [["Classic", 0, "fff7e8", "a9c4e8", "e84a5f"], ["Sky", 40, "bfe3f
 const SHOP_X := 25.0
 const SHOP_Y := 52.0
 const TILE := Vector2(100, 78)
+const ZOOM_OUT := 0.58
+const FOCUS_Y := 50.0
+const SHIP_LOW := -128.0
+const LOCK_TIME := 1.6
+const M_SPEED := 165.0
+const M_TURN := 2.3
+const NAVY := Color("2c3e72")
+const SHIP_HP := 8
+const CANNON_X := [55.0]
+const SILO_X := [-72.0, -32.0, 8.0]
+const NAVY_DARK := Color("1c2850")
 
 var state := "menu"
 var plane_y := H / 2.0
@@ -62,6 +73,31 @@ var owned: Array = [0]
 var skin := 0
 var coin_pops: Array = []
 var shop_msg := ""
+var policing := false
+var police_amt := 0.0
+var ship_in := 0.0
+var cannon_t := 0.0
+var cannon_angs: Array = [PI / 2.0]
+var fire_q: Array = [-1.0]
+var burst_left := 0
+var booms: Array = []
+var ship_hp := 0
+var ship_flash := 0.0
+var sink_t := 0.0
+var boom_t := 0.0
+var boss_lag := 1.0
+var fx: Array = []
+var police_msg_wait := false
+var shots_left := 0
+var volleys_left := 0
+var bay_open := 0.0
+var lock_t := 0.0
+var missiles: Array = []
+var shells: Array = []
+var npc_msg := ""
+var npc_t := 0.0
+var mass_done := false
+var view := Transform2D.IDENTITY
 var shop_msg_t := 0.0
 var massing := false
 var mass_amt := 0.0
@@ -110,6 +146,25 @@ func _reset() -> void:
 	massing = false
 	mass_amt = 0.0
 	erasers.clear()
+	policing = false
+	police_amt = 0.0
+	ship_in = 0.0
+	bay_open = 0.0
+	lock_t = 0.0
+	fire_q = [-1.0]
+	booms.clear()
+	fx.clear()
+	police_msg_wait = false
+	ship_hp = SHIP_HP
+	boss_lag = 1.0
+	ship_flash = 0.0
+	sink_t = 0.0
+	burst_left = 0
+	missiles.clear()
+	shells.clear()
+	npc_msg = ""
+	npc_t = 0.0
+	mass_done = false
 	eraser_t = 1.5
 	since_riser = 0.0
 	var x := W + 40.0
@@ -182,7 +237,8 @@ func _unhandled_input(e: InputEvent) -> void:
 			state = "play"
 			_flap()
 		"play":
-			_flap()
+			if lock_t <= 0.0:
+				_flap()
 		"over":
 			if over_t > 0.6:
 				_reset()
@@ -212,6 +268,14 @@ func _process(delta: float) -> void:
 	if paused:
 		queue_redraw()
 		return
+	npc_t += delta
+	if lock_t > 0.0 and state == "play":
+		lock_t -= delta
+		if lock_t <= 0.0:
+			_play("crash", 0.6)
+			shake = 0.3
+		queue_redraw()
+		return
 	var sp := 60.0
 	if state == "play":
 		sp = _speed()
@@ -226,6 +290,9 @@ func _process(delta: float) -> void:
 	fog_amt = move_toward(fog_amt, ftarget, delta * 0.5)
 	var mtarget := 1.0 if massing and (state == "play" or state == "over") else 0.0
 	mass_amt = move_toward(mass_amt, mtarget, delta * 1.5)
+	var ptarget := 1.0 if policing and (state == "play" or state == "over") else 0.0
+	police_amt = move_toward(police_amt, ptarget, delta * 0.8)
+	ship_in = move_toward(ship_in, ptarget, delta * 0.6)
 	if rain_amt > 0.0:
 		var want := int(rain_amt * 140.0)
 		while drops.size() < want:
@@ -255,6 +322,20 @@ func _process(delta: float) -> void:
 		p[1] *= 0.92
 		p[2] -= delta
 	parts = parts.filter(func(p): return p[2] > 0.0)
+	for b in booms:
+		b[1] += delta
+	booms = booms.filter(func(b): return b[1] < 0.55)
+	for f in fx:
+		f[2] += delta
+		f[0] += f[1] * delta
+		if f[5] == 1:
+			f[1] = f[1] * 0.94 + Vector2(0, -22.0 * delta)
+		elif f[5] == 0:
+			f[1] = f[1] * 0.9
+	fx = fx.filter(func(f): return f[2] < f[3])
+	ship_flash = maxf(0.0, ship_flash - delta * 4.0)
+	if ship_flash <= 0.0:
+		boss_lag = move_toward(boss_lag, float(maxi(ship_hp, 0)) / SHIP_HP, delta * 0.5)
 	for p in pops:
 		p[0].y -= 30.0 * delta
 		p[2] -= delta
@@ -272,19 +353,25 @@ func _update_play(delta: float, sp: float) -> void:
 		p[0] -= sp * delta
 		if p[5]:
 			p[6] += delta * 1.6
-		if p[7] == 2 and p[0] < PLANE_X + 230:
+		if (p[7] == 2 or p[7] == 4) and p[0] < PLANE_X + 250:
 			p[9] = move_toward(p[9], p[10], 170.0 * delta)
-	while pencils.back()[0] < W + 40:
+	while pencils.back()[0] < _view_right() + 40:
 		var last: Array = pencils.back()
 		if massing:
 			if last[7] == 0:
 				_add_row(last[0] + _spacing())
 			else:
 				_add_row(last[0] + PENCIL_W + 2)
+		elif policing:
+			if last[7] == 0:
+				_add_floor(last[0] + _spacing())
+			else:
+				_add_floor(last[0] + PENCIL_W + 2)
 		else:
 			_add_pencil(last[0] + (_spacing() if last[7] == 0 else _spacing() + 20))
 	_update_erasers(delta, sp)
-	if pencils[0][0] < -60:
+	_update_police(delta)
+	if pencils[0][0] < _view_left() - 60:
 		pencils.pop_front()
 	vel += GRAVITY * (1.0 + 0.5 * rain_amt) * delta
 	vel = minf(vel, 520.0 + 120.0 * rain_amt)
@@ -292,7 +379,7 @@ func _update_play(delta: float, sp: float) -> void:
 	for p in pencils:
 		if not p[3] and p[0] + PENCIL_W < PLANE_X - 10:
 			p[3] = true
-			if p[7] == 1:
+			if p[7] == 1 or p[7] == 3:
 				continue
 			score += 1
 			_play("point", 1.0 + (score % 5) * 0.06)
@@ -303,17 +390,222 @@ func _update_play(delta: float, sp: float) -> void:
 				_play("level", 1.0)
 				pops.append([Vector2(W / 2.0, H / 2.0 - 40), "%d!" % score, 1.0])
 			_rain_check()
-	if plane_y > H - 6 or plane_y < 4:
+	if plane_y > H - 6 or plane_y < _ceiling():
 		_crash()
 		return
 	for p in pencils:
 		if _hit(p):
 			_crash()
 			return
+	for m in missiles:
+		if m[0].distance_to(Vector2(PLANE_X, plane_y)) < 11.0:
+			_crash()
+			return
+	for sh in shells:
+		if sh[0].distance_to(Vector2(PLANE_X, plane_y)) < 8.0:
+			_crash()
+			return
 	for e in erasers:
 		if e[4] <= 0.0 and e[0].distance_to(Vector2(PLANE_X, plane_y)) < 13.0:
 			_crash()
 			return
+
+
+func _add_floor(x: float) -> void:
+	var col: Color = [YELLOW, BLUE, PINK, LIME, ORANGE].pick_random()
+	since_riser += PENCIL_W + 2
+	var kind := 3
+	var ext := 0.0
+	if since_riser > 130.0 and (randf() < 0.13 or since_riser > 250.0):
+		kind = 4
+		ext = randf_range(50.0, 110.0)
+		since_riser = 0.0
+	pencils.append([x, H / 2.0, 0.0, false, col, false, 0.0, kind, 1, 0.0, ext])
+
+
+func _zoom() -> float:
+	return lerpf(1.0, ZOOM_OUT, smoothstep(0.0, 1.0, police_amt))
+
+
+func _view_right() -> float:
+	return W / 2.0 + W / 2.0 / _zoom()
+
+
+func _view_left() -> float:
+	return W / 2.0 - W / 2.0 / _zoom()
+
+
+func _ship_bottom() -> float:
+	return SHIP_LOW - (1.0 - smoothstep(0.0, 1.0, ship_in)) * 150.0
+
+
+func _ceiling() -> float:
+	return lerpf(4.0, SHIP_LOW + 6.0, smoothstep(0.0, 1.0, police_amt))
+
+
+func _cannon_pos(i: int) -> Vector2:
+	return Vector2(CANNON_X[i], _ship_bottom() + 2)
+
+
+func _bay_pos(i: int) -> Vector2:
+	return Vector2(SILO_X[i], _ship_bottom() - 13)
+
+
+func _blocked(pos: Vector2) -> bool:
+	if pos.y > H - EDGE:
+		return true
+	for p in pencils:
+		if pos.x + 4 > p[0] and pos.x - 4 < p[0] + PENCIL_W:
+			var b := _bounds(p)
+			if pos.y < b.x or pos.y > b.y:
+				return true
+	return false
+
+
+func _update_police(delta: float) -> void:
+	if police_msg_wait:
+		for p in pencils:
+			if p[7] >= 3 and p[0] < PLANE_X:
+				police_msg_wait = false
+				npc_msg = "This is the Sky Police! You are flying illegally. Land now or be destroyed!"
+				npc_t = 0.0
+				break
+	for i in CANNON_X.size():
+		var cpos := _cannon_pos(i)
+		var aim := Vector2(PLANE_X, plane_y) - cpos
+		if fire_q[i] < 0.0:
+			cannon_angs[i] = lerp_angle(cannon_angs[i], aim.angle(), clampf(5.0 * delta, 0.0, 1.0))
+		if fire_q[i] >= 0.0:
+			fire_q[i] -= delta
+			if fire_q[i] < 0.0:
+				var dir := Vector2.from_angle(cannon_angs[i])
+				shells.append([cpos + dir * 24.0, dir * 165.0])
+				_play("crash", 2.2)
+				parts.append([cpos + dir * 24.0, Vector2.ZERO, 0.2, 0.2, ORANGE, 9.0])
+				burst_left -= 1
+				if burst_left > 0:
+					fire_q[i] = 0.22
+	if policing and volleys_left > 0 and ship_in > 0.97:
+		if shots_left > 0:
+			bay_open = move_toward(bay_open, 0.0, delta * 1.5)
+			cannon_t -= delta
+			if cannon_t <= 0.0:
+				cannon_t = randf_range(2.4, 3.0)
+				shots_left -= 1
+				fire_q[0] = 1.0
+				burst_left = 1
+				cannon_angs[0] = (Vector2(PLANE_X, plane_y) - _cannon_pos(0)).angle()
+		else:
+			bay_open = move_toward(bay_open, 1.0, delta * 1.5)
+			if bay_open >= 1.0 and missiles.is_empty():
+				_start_lock()
+	else:
+		bay_open = move_toward(bay_open, 0.0, delta * 1.5)
+	var keep: Array = []
+	for sh in shells:
+		sh[0] += sh[1] * delta
+		if _blocked(sh[0]) or sh[0].x < _view_left() - 20 or sh[0].y > H + 40:
+			if sh[0].y < H + 30:
+				_boom(sh[0], 8.0)
+			continue
+		keep.append(sh)
+	shells = keep
+	var mk: Array = []
+	for m in missiles:
+		var pos: Vector2 = m[0]
+		var v: Vector2 = m[1]
+		var want := (Vector2(PLANE_X, plane_y) - pos).angle()
+		var ang := v.angle()
+		ang += clampf(wrapf(want - ang, -PI, PI), -M_TURN * delta, M_TURN * delta)
+		m[1] = Vector2.from_angle(ang) * M_SPEED
+		m[0] = pos + m[1] * delta
+		m[2] -= delta
+		var back := Vector2.from_angle(m[1].angle() + PI)
+		fx.append([pos + back * 8.0, back * 12.0 + Vector2(randf_range(-6, 6), randf_range(-6, 6)), 0.0, randf_range(0.7, 1.0), randf_range(2.5, 3.5), 1])
+		if m[2] < 5.8 and m[0].y < _ship_bottom() + 2.0 and m[0].x > -160.0 and m[0].x < 450.0 and ship_hp > 0:
+			_boom(m[0], 28.0)
+			_ship_hit()
+			continue
+		if _blocked(m[0]) or m[2] <= 0.0:
+			_boom(m[0])
+			continue
+		mk.append(m)
+	missiles = mk
+	if sink_t > 0.0:
+		sink_t -= delta
+		boom_t -= delta
+		if boom_t <= 0.0:
+			boom_t = 0.12
+			_boom(Vector2(randf_range(-90, 420), _ship_bottom() - randf_range(0, 30)), randf_range(14, 26))
+	if policing and volleys_left <= 0 and missiles.is_empty():
+		policing = false
+		npc_msg = "Out of ammo... Don't worry, we'll get 'em next time."
+		npc_t = 0.0
+		_earn(25)
+
+
+func _boom(pos: Vector2, size: float = 14.0) -> void:
+	booms.append([pos, 0.0, size])
+	shake = maxf(shake, 0.15 + size * 0.008)
+	_play("crash", 1.5)
+	var sc := size / 14.0
+	for i in int(9 * sc) + 3:
+		var a := randf() * TAU
+		fx.append([pos + Vector2.from_angle(a) * randf_range(0, 6) * sc, Vector2.from_angle(a) * randf_range(20, 70) * sc, 0.0, randf_range(0.35, 0.6), randf_range(4, 8) * sc, 0])
+	for i in int(6 * sc) + 2:
+		var a2 := randf() * TAU
+		fx.append([pos + Vector2.from_angle(a2) * randf_range(2, 10) * sc, Vector2.from_angle(a2) * randf_range(10, 35) * sc + Vector2(0, -15), 0.0, randf_range(0.8, 1.3), randf_range(4, 7) * sc, 1])
+	for i in int(10 * sc) + 4:
+		var a3 := randf() * TAU
+		fx.append([pos, Vector2.from_angle(a3) * randf_range(120, 260), 0.0, randf_range(0.2, 0.4), 2.0, 2])
+	for i in int(6 * sc):
+		var a4 := randf() * TAU
+		parts.append([pos, Vector2.from_angle(a4) * randf_range(60, 150), 0.6, 0.6, [INK, GREY_DARK].pick_random(), randf_range(2, 4)])
+
+
+func _ship_hit() -> void:
+	ship_hp -= 1
+	ship_flash = 1.0
+	if ship_hp == SHIP_HP - 1:
+		npc_msg = "Hey! Watch where you're pointing those!"
+		npc_t = 0.0
+	if ship_hp <= 0 and policing:
+		policing = false
+		sink_t = 1.8
+		missiles.clear()
+		shells.clear()
+		npc_msg = "Mayday! Mayday! We're hit! Retreat, retreat!"
+		npc_t = 0.0
+		flash = 1.0
+		_earn(50)
+
+
+func _start_lock() -> void:
+	volleys_left -= 1
+	shots_left = randi_range(3, 5)
+	cannon_t = 2.2
+	lock_t = LOCK_TIME
+	_play("level", 0.6)
+	var target := Vector2(PLANE_X, plane_y)
+	var n := 3 + (2 - volleys_left) * 2
+	for i in n:
+		var bp := _bay_pos(i % SILO_X.size())
+		var direct := (target - bp).angle()
+		var angs: Array = [direct, randf_range(-0.25, 0.3), randf_range(0.5, 1.0), randf_range(1.2, 1.5), direct - 0.5]
+		var v := Vector2.from_angle(angs[i % angs.size()] + randf_range(-0.15, 0.15) * float(i / angs.size())) * M_SPEED
+		var path := PackedVector2Array()
+		var sp := bp
+		var sv := v
+		for k in 160:
+			path.append(sp)
+			var a := sv.angle()
+			a += clampf(wrapf((target - sp).angle() - a, -PI, PI), -M_TURN / 30.0, M_TURN / 30.0)
+			sv = Vector2.from_angle(a) * M_SPEED
+			sp += sv / 30.0
+			if sp.distance_to(target) < 8.0 or sp.y > H - EDGE:
+				path.append(sp)
+				break
+		missiles.append([bp, v, 6.5, path])
 
 
 func _add_row(x: float) -> void:
@@ -361,16 +653,32 @@ func _rain_check() -> void:
 			raining = true
 		elif pending == "fog":
 			fogging = true
+		elif pending == "police":
+			policing = true
+			since_riser = 0.0
+			volleys_left = 3
+			shots_left = randi_range(3, 5)
+			cannon_t = 2.5
 		else:
 			massing = true
+			mass_done = true
 			since_riser = 0.0
 			rain_left = randi_range(8, 12)
 			flash = 1.0
 			shake = 0.4
 		pending = ""
 		return
+	if policing:
+		return
 	var nxt := score + 1
-	if nxt == 50 and not massing:
+	if nxt == 10:
+		raining = false
+		fogging = false
+		massing = false
+		pending = "police"
+		police_msg_wait = true
+		return
+	if nxt >= 50 and not mass_done and not massing:
 		raining = false
 		fogging = false
 		pending = "mass"
@@ -403,6 +711,11 @@ func _rain_check() -> void:
 
 
 func _bounds(p: Array) -> Vector2:
+	if p[7] >= 3:
+		var fb := H - EDGE
+		if p[7] == 4:
+			fb -= p[9]
+		return Vector2(-9999.0, fb)
 	if p[7] != 0:
 		var top := EDGE
 		var bot := H - EDGE
@@ -447,48 +760,88 @@ func _crash() -> void:
 	_save_best()
 
 
+func _wt(pos: Vector2, rot: float) -> void:
+	draw_set_transform_matrix(view * Transform2D(rot, pos))
+
+
 func _draw() -> void:
+	var z := _zoom()
+	var focus := Vector2(W / 2.0, lerpf(H / 2.0, FOCUS_Y, smoothstep(0.0, 1.0, police_amt)))
+	view = Transform2D(0.0, Vector2(z, z), 0.0, Vector2(W / 2.0, H / 2.0) - focus * z)
 	var so := Vector2(randf_range(-1, 1), randf_range(-1, 1)) * shake * shake * 8.0
-	draw_set_transform(so)
-	draw_rect(Rect2(-20, -20, W + 40, H + 40), PAPER)
-	var ry := 26.0
-	while ry < H + 20:
-		draw_rect(Rect2(-20, ry, W + 40, 1), RULE)
+	_wt(so, 0.0)
+	draw_rect(Rect2(-500, -500, W + 1000, H + 1000), PAPER)
+	var ry := 26.0 - 18.0 * 30.0
+	while ry < H + 140:
+		draw_rect(Rect2(-300, ry, W + 600, 1), RULE)
 		ry += 18.0
 	var mx := fposmod(60.0 - scroll, W + 120.0) - 60.0
-	draw_rect(Rect2(mx, -20, 2, H + 40), MARGIN)
+	draw_rect(Rect2(mx, -500, 2, H + 1000), MARGIN)
 	for i in 4:
 		draw_circle(Vector2(mx - 20, 40 + i * 64), 6, Color("d9d2c0"))
 	for d in doodles:
 		_doodle(d[0], d[1])
 	if state != "menu":
 		for p in pencils:
-			if p[0] > -60 and p[0] < W + 20:
+			if p[0] > _view_left() - 60 and p[0] < _view_right() + 20:
 				_pencil(p)
 	for p in parts:
 		var a: float = p[2] / p[3]
 		draw_rect(Rect2(p[0] - Vector2.ONE * p[5] / 2.0, Vector2.ONE * p[5]), Color(p[4], a))
+	for f in fx:
+		if f[5] == 1:
+			var k1: float = f[2] / f[3]
+			var r1: float = f[4] * (0.7 + k1 * 1.3)
+			draw_circle(f[0], r1 + 1.2, Color(INK, 0.25 * (1.0 - k1)))
+			draw_circle(f[0], r1, Color(Color("cfc9bb"), 0.75 * (1.0 - k1)))
+	for b in booms:
+		var k: float = b[1] / 0.55
+		var sz: float = b[2]
+		if k < 0.25:
+			draw_circle(b[0], sz * (1.2 + k * 2.0), Color(WHITE, 0.9 * (1.0 - k * 4.0)))
+		draw_arc(b[0], sz * (0.8 + k * 2.4), 0.0, TAU, 32, Color(INK, 0.7 * (1.0 - k)), 2.5 * (1.0 - k) + 0.5)
+	for f in fx:
+		var k2: float = f[2] / f[3]
+		if f[5] == 0:
+			var r2: float = f[4] * (1.0 - k2 * 0.7)
+			var col: Color = YELLOW.lerp(ORANGE, minf(k2 * 2.0, 1.0)).lerp(RED, maxf(k2 * 2.0 - 1.0, 0.0))
+			draw_circle(f[0], r2 + 1.5, Color(INK, 0.8 * (1.0 - k2)))
+			draw_circle(f[0], r2, Color(col, 1.0 - k2 * 0.5))
+			draw_circle(f[0] + Vector2(-r2 * 0.25, -r2 * 0.25), r2 * 0.45, Color(Color("fff3c0"), 0.8 * (1.0 - k2)))
+		elif f[5] == 2:
+			var tail: Vector2 = f[1] * 0.035
+			draw_line(f[0], f[0] - tail, Color(YELLOW, 1.0 - k2), 2.0)
+			draw_line(f[0], f[0] - tail * 0.4, Color(WHITE, 1.0 - k2), 1.5)
 	for e in erasers:
 		if e[4] > 0.0:
 			_warn_path(e)
 		else:
 			_eraser(e[0], e[2])
+	for sh in shells:
+		draw_circle(sh[0], 5.0, INK)
+		draw_circle(sh[0], 3.5, GREY_DARK)
+	for m in missiles:
+		_missile(m[0], m[1].angle())
+	if ship_in > 0.0:
+		_police_ship()
 	if state != "shop":
 		_plane(Vector2(PLANE_X, plane_y) + so)
+	if lock_t > 0.0:
+		_draw_lock()
 	if rain_amt > 0.0:
-		draw_rect(Rect2(-20, -20, W + 40, H + 40), Color(0.2, 0.25, 0.35, 0.22 * rain_amt))
+		draw_rect(Rect2(-500, -500, W + 1000, H + 1000), Color(0.2, 0.25, 0.35, 0.22 * rain_amt))
 		for d in drops:
 			var dp: Vector2 = d[0]
 			draw_line(dp, dp + Vector2(-d[2] * 0.3, d[2]), Color(0.45, 0.6, 0.85, 0.7 * rain_amt), 1.5)
 	if fog_amt > 0.0:
 		_draw_fog()
-	draw_set_transform(Vector2.ZERO)
 	for p in pops:
 		_text(p[1], p[0], 16 if p[1] == "+1" else 32, BLUE_DARK, true)
 	for c in coin_pops:
 		var ca := clampf(c[2], 0.0, 1.0)
 		_coin(c[0] + Vector2(-16, -5), 6.0, ca)
 		_text(c[1], c[0] + Vector2(6, 0), 16, Color(ORANGE, ca), true, 3, Color(INK, ca))
+	draw_set_transform(Vector2.ZERO)
 	if flash > 0.0:
 		draw_rect(Rect2(0, 0, W, H), Color(1, 1, 1, flash * 0.25))
 	match state:
@@ -504,6 +857,7 @@ func _draw() -> void:
 			_cash_box()
 			_scenario_box()
 			_caption()
+			_npc_box()
 		"over":
 			_draw_over()
 	if paused:
@@ -515,23 +869,23 @@ func _draw() -> void:
 func _plane(base: Vector2) -> void:
 	var rot := clampf(vel / 500.0, -0.5, 0.8)
 	if state == "over":
-		draw_set_transform(base, crash_rot)
+		_wt(base, crash_rot)
 		draw_circle(Vector2.ZERO, 12, INK)
 		draw_circle(Vector2.ZERO, 10.5, WHITE)
 		draw_line(Vector2(-5, -3), Vector2(3, 2), GREY, 1.5)
 		draw_line(Vector2(-2, 5), Vector2(5, -5), GREY, 1.5)
 		draw_line(Vector2(-6, 3), Vector2(-1, -6), GREY, 1.5)
-		draw_set_transform(Vector2.ZERO)
+		_wt(Vector2.ZERO, 0.0)
 		return
 	var top := PackedVector2Array([Vector2(18, 0), Vector2(-15, -13), Vector2(-7, 0)])
 	var under := PackedVector2Array([Vector2(18, 0), Vector2(-7, 0), Vector2(-15, 10)])
 	for o in [Vector2(-1.5, 0), Vector2(1.5, 0), Vector2(0, -1.5), Vector2(0, 1.5)]:
-		draw_set_transform(base + o, rot)
+		_wt(base + o, rot)
 		draw_colored_polygon(top, INK)
 		draw_colored_polygon(under, INK)
-	draw_set_transform(base, rot)
+	_wt(base, rot)
 	_plane_paint(skin)
-	draw_set_transform(Vector2.ZERO)
+	_wt(Vector2.ZERO, 0.0)
 
 
 func _plane_paint(id: int) -> void:
@@ -571,13 +925,150 @@ func _pencil(p: Array) -> void:
 	var top: float = floor(b.x)
 	var bot: float = floor(b.y)
 	var col: Color = p[4]
-	_pencil_body(x, -20.0, top - 18, col)
-	_pencil_tip(x, top - 18, 1)
-	_pencil_body(x, bot + 18, H + 20.0, col)
+	if top > -500.0:
+		_pencil_body(x, -220.0, top - 18, col)
+		_pencil_tip(x, top - 18, 1)
+	_pencil_body(x, bot + 18, H + 160.0, col)
 	_pencil_tip(x, bot + 18, -1)
 	if p[5]:
 		draw_rect(Rect2(x + 6, top - 40, 12, 3), Color(INK, 0.3))
 		draw_rect(Rect2(x + 6, bot + 37, 12, 3), Color(INK, 0.3))
+
+
+func _police_ship() -> void:
+	var b := _ship_bottom()
+	var hull := PackedVector2Array([Vector2(-180, -520), Vector2(450, -520), Vector2(450, b - 34), Vector2(430, b - 10), Vector2(400, b), Vector2(-110, b), Vector2(-160, b - 10), Vector2(-180, b - 34)])
+	var outl := PackedVector2Array()
+	for v in hull:
+		outl.append(v + (v - Vector2(100, b - 120)).normalized() * 3.0)
+	draw_colored_polygon(outl, INK)
+	draw_colored_polygon(hull, NAVY)
+	var dmg := 1.0 - float(ship_hp) / SHIP_HP
+	for i in int(dmg * 8.0):
+		var cx := -60.0 + i * 55.0
+		draw_line(Vector2(cx, b - 2), Vector2(cx + 9, b - 12), INK, 2.0)
+		draw_line(Vector2(cx + 9, b - 12), Vector2(cx + 4, b - 18), INK, 2.0)
+		if randf() < 0.3:
+			parts.append([Vector2(cx + 5, b - 4), Vector2(randf_range(-8, 8), randf_range(10, 30)), 0.5, 0.5, GREY, 4.0])
+	if ship_flash > 0.0:
+		draw_colored_polygon(hull, Color(1, 1, 1, ship_flash * 0.6))
+	draw_rect(Rect2(-160, b - 30, 610, 10), WHITE)
+	for i in 76:
+		if i % 2 == 0:
+			draw_rect(Rect2(-160 + i * 8, b - 30, 8, 5), BLUE_DARK)
+		else:
+			draw_rect(Rect2(-160 + i * 8, b - 25, 8, 5), BLUE_DARK)
+	draw_rect(Rect2(-160, b - 31, 610, 1.5), INK)
+	draw_rect(Rect2(-160, b - 20, 610, 1.5), INK)
+	var on := fmod(t * 3.0, 1.0) < 0.5
+	draw_circle(Vector2(-100, b + 1), 6.0, INK)
+	draw_circle(Vector2(-100, b + 1), 4.5, RED if on else Color("6e2a2a"))
+	draw_circle(Vector2(390, b + 1), 6.0, INK)
+	draw_circle(Vector2(390, b + 1), 4.5, Color("2a3a6e") if on else BLUE)
+	for si in SILO_X.size():
+		var bp := _bay_pos(si)
+		draw_circle(bp, 15.0, INK)
+		draw_circle(bp, 12.5, Color("0c0c14"))
+		var dw := 12.5 * (1.0 - bay_open)
+		draw_rect(Rect2(bp.x - 12.5, bp.y - 12, dw, 24), NAVY_DARK)
+		draw_rect(Rect2(bp.x + 12.5 - dw, bp.y - 12, dw, 24), NAVY_DARK)
+		draw_arc(bp, 14.0, 0.0, TAU, 28, INK, 3.0)
+	for i in CANNON_X.size():
+		var cp := _cannon_pos(i)
+		var ang: float = cannon_angs[i]
+		var dir := Vector2.from_angle(ang)
+		_quad(cp + dir * 13.0, Vector2(26, 11), ang, INK)
+		_quad(cp + dir * 13.0, Vector2(23, 7), ang, GREY_DARK)
+		draw_circle(cp, 11.0, INK)
+		draw_circle(cp, 9.0, GREY)
+		draw_circle(cp, 3.0, INK)
+		if fire_q[i] >= 0.0:
+			var g := 0.5 + 0.5 * sin(t * 30.0)
+			draw_circle(cp + dir * 26.0, 5.0 + g * 2.0, Color(RED, 0.5 + 0.4 * g))
+			var s0 := cp + dir * 26.0
+			var s1 := cp + dir * 700.0
+			var n := dir.orthogonal() * 6.0
+			var blink := 0.55 + 0.45 * sin(t * 18.0)
+			var lane := PackedVector2Array([s0 + n, s1 + n, s1 - n, s0 - n])
+			draw_colored_polygon(lane, Color(RED, 0.12 * blink))
+			lane.append(s0 + n)
+			draw_polyline(lane, Color(RED, 0.9 * blink), 2.0)
+
+
+func _missile(c: Vector2, rot: float) -> void:
+	_quad(c, Vector2(16, 7), rot, INK)
+	_quad(c, Vector2(13, 4.5), rot, WHITE)
+	_quad(c + Vector2(5, 0).rotated(rot), Vector2(4, 4.5), rot, RED)
+	_quad(c + Vector2(-6, 0).rotated(rot), Vector2(4, 10), rot, INK)
+	var fl := 0.6 + 0.4 * sin(t * 40.0)
+	draw_circle(c + Vector2(-10, 0).rotated(rot), 2.5 * fl + 1.0, ORANGE)
+
+
+func _draw_lock() -> void:
+	draw_rect(Rect2(-500, -500, W + 1000, H + 1000), Color(0.42, 0.42, 0.45, 0.6))
+	var prog := clampf(1.0 - lock_t / LOCK_TIME, 0.0, 1.0)
+	var draw_p := clampf(prog * 1.6, 0.0, 1.0)
+	for m in missiles:
+		var path: PackedVector2Array = m[3]
+		var n := int(path.size() * draw_p)
+		var i := 0
+		while i < n - 2:
+			draw_line(path[i], path[i + 2], RED, 2.0)
+			i += 4
+		if n > 1:
+			draw_circle(path[n - 1], 2.5, RED)
+	var c := Vector2(PLANE_X, plane_y)
+	var r := lerpf(34.0, 16.0, minf(prog * 2.0, 1.0))
+	var col := Color(RED, 0.9)
+	draw_arc(c, r, 0.0, TAU, 40, col, 2.0)
+	draw_arc(c, r * 0.35, 0.0, TAU, 20, col, 1.5)
+	for k in 4:
+		var d := Vector2.from_angle(k * PI / 2.0 + t * 0.8)
+		draw_line(c + d * (r * 0.5), c + d * (r + 8.0), col, 2.0)
+	for k in 8:
+		var d2 := Vector2.from_angle(k * PI / 4.0 + PI / 8.0 + t * 0.8)
+		draw_line(c + d2 * (r - 3.0), c + d2 * r, col, 1.5)
+
+
+func _wrap(text: String, width: float, size: int) -> Array:
+	var lines: Array = []
+	var cur := ""
+	for word in text.split(" "):
+		var test := word if cur == "" else cur + " " + word
+		if font.get_string_size(test, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width and cur != "":
+			lines.append(cur)
+			cur = word
+		else:
+			cur = test
+	if cur != "":
+		lines.append(cur)
+	return lines
+
+
+func _npc_box() -> void:
+	if npc_msg == "" or npc_t > 6.0:
+		return
+	var a := clampf(minf(npc_t * 4.0, (6.0 - npc_t) * 2.0), 0.0, 1.0)
+	var box := Rect2(10, H - 64 - 30.0 * smoothstep(0.0, 1.0, police_amt), W - 20, 54)
+	draw_rect(box.grow(2), Color(INK, a))
+	draw_rect(box, Color(WHITE, a))
+	var pr := Rect2(box.position + Vector2(6, 6), Vector2(42, 42))
+	draw_rect(pr.grow(2), Color(INK, a))
+	draw_rect(pr, Color("cfe0f5", a))
+	var hc := pr.position + Vector2(21, 17)
+	draw_rect(Rect2(pr.position + Vector2(8, 26), Vector2(26, 16)), Color(NAVY, a))
+	draw_circle(pr.position + Vector2(21, 30), 13.0, Color(NAVY, a))
+	draw_rect(Rect2(pr.position + Vector2(19, 30), Vector2(4, 12)), Color(YELLOW, a))
+	draw_circle(hc, 8.0, Color("f2c9a0", a))
+	draw_rect(Rect2(hc + Vector2(-9, -9), Vector2(18, 5)), Color(NAVY_DARK, a))
+	draw_rect(Rect2(hc + Vector2(-11, -5), Vector2(22, 2)), Color(INK, a))
+	draw_circle(hc + Vector2(-3, 1), 1.2, Color(INK, a))
+	draw_circle(hc + Vector2(3, 1), 1.2, Color(INK, a))
+	_text("SKY POLICE", box.position + Vector2(58, 15), 11, Color(BLUE_DARK, a), false)
+	var shown := npc_msg.substr(0, int(npc_t * 45.0))
+	var lines := _wrap(shown, box.size.x - 66, 12)
+	for i in mini(lines.size(), 2):
+		_text(lines[i], box.position + Vector2(58, 31 + i * 15), 12, Color(INK, a), false)
 
 
 func _warn_path(e: Array) -> void:
@@ -665,8 +1156,9 @@ func _coin(c: Vector2, r: float, a: float) -> void:
 
 
 func _cash_box() -> void:
-	_coin(Vector2(18, 18), 7.0, 1.0)
-	_text(str(cash), Vector2(30, 24), 16, WHITE, false, 3)
+	var y := 18.0 + 52.0 * smoothstep(0.0, 1.0, police_amt)
+	_coin(Vector2(18, y), 7.0, 1.0)
+	_text(str(cash), Vector2(30, y + 6), 16, WHITE, false, 3)
 
 
 func _start_btn() -> Rect2:
@@ -805,7 +1297,7 @@ func _caption() -> void:
 
 
 func _scenario_box() -> void:
-	var amt := maxf(maxf(rain_amt, fog_amt), mass_amt)
+	var amt := maxf(maxf(rain_amt, fog_amt), maxf(mass_amt, police_amt))
 	if amt <= 0.0:
 		return
 	var a := clampf(amt * 1.5, 0.0, 1.0)
@@ -817,7 +1309,9 @@ func _scenario_box() -> void:
 	var blink := 0.8 + 0.2 * sin(t * 6.0)
 	_text("SCENARIO ACTIVE", r.position + Vector2(64, 17), 11, Color(RED, a * blink), true)
 	var label := "RAIN"
-	if mass_amt > 0.0:
+	if police_amt > 0.0:
+		label = "SKY POLICE"
+	elif mass_amt > 0.0:
 		label = "MASS RESET"
 	elif fog_amt > rain_amt:
 		label = "FOG"
@@ -826,6 +1320,25 @@ func _scenario_box() -> void:
 
 func _score_box() -> void:
 	_text(str(score), Vector2(W / 2.0, 44), 36, WHITE, true, 5)
+	if police_amt > 0.0 and (ship_hp > 0 or sink_t > 0.0) and state == "play":
+		_boss_bar(clampf(police_amt * 1.5, 0.0, 1.0))
+
+
+func _boss_bar(a: float) -> void:
+	var r := Rect2(W / 2.0 - 120, H - 18, 240, 9)
+	_text("SKY POLICE CRUISER", Vector2(r.position.x, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
+	_text("%d / %d" % [maxi(ship_hp, 0), SHIP_HP], Vector2(r.end.x - 30, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
+	draw_rect(r.grow(3), Color(INK, a))
+	draw_rect(r, Color("3a3556", a))
+	var f := float(maxi(ship_hp, 0)) / SHIP_HP
+	draw_rect(Rect2(r.position, Vector2(r.size.x * boss_lag, r.size.y)), Color(WHITE, a * 0.85))
+	draw_rect(Rect2(r.position, Vector2(r.size.x * f, r.size.y)), Color(RED, a))
+	draw_rect(Rect2(r.position, Vector2(r.size.x * f, 3)), Color(1, 1, 1, a * 0.35))
+	for i in range(1, SHIP_HP):
+		var x := r.position.x + r.size.x * i / SHIP_HP
+		draw_rect(Rect2(x - 1, r.position.y, 2, r.size.y), Color(INK, a))
+	if ship_flash > 0.0:
+		draw_rect(r, Color(1, 1, 1, ship_flash * 0.5 * a))
 
 
 func _banner(title: String, sub: String) -> void:
