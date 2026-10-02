@@ -30,14 +30,23 @@ const TILE := Vector2(100, 78)
 const ZOOM_OUT := 0.58
 const FOCUS_Y := 50.0
 const SHIP_LOW := -128.0
+const SPACE := Color("12132e")
+const MOON_GREY := Color("9a96a8")
+const MOON_DARK := Color("6e6a80")
+const PIXIE := ["...........KK.....", "..........KRRK....", "....KKKKKKRRK.....", "...KRRRRRRRRRKK...", "..KRRRRRRRRRRRWK..", ".KRRDRRRRRRRRRRRK.", ".KRRRKRRRRRKRRRRK.", "KRRRKSSKRRKSSKRRRK", "KRDKSSSSKKSSSSKDRK", "KRKSSKKSSSSKKSSKRK", ".KSSSKWSSSSKWSSSK.", ".KSSSKKSSSSKKSSSK.", ".KSPPSSSKKSSSPPSK.", "..KSSSSSSSSSSSSK..", "...KSSSSSSSSSSK...", "....KKKKKKKKKK...."]
+const BOSS_HP := 4
+const SURVIVE_TIME := 5.0
+const BOSS_HOME := Vector2(400, 20)
+const BOSS_ZOOM := 0.6
+const BOSS_FOCUS := 62.0
 const LOCK_TIME := 1.6
 const M_SPEED := 165.0
 const M_TURN := 2.3
-const NAVY := Color("2c3e72")
+const NAVY := Color("2f6b2a")
 const SHIP_HP := 8
 const CANNON_X := [55.0]
 const SILO_X := [-72.0, -32.0, 8.0]
-const NAVY_DARK := Color("1c2850")
+const NAVY_DARK := Color("1d4719")
 
 var state := "menu"
 var plane_y := H / 2.0
@@ -88,6 +97,47 @@ var boom_t := 0.0
 var boss_lag := 1.0
 var fx: Array = []
 var police_msg_wait := false
+var inverting := false
+var grav := 1.0
+var grav_vis := 1.0
+var loop_base := 0
+var speed_mult := 1.0
+var portal_on := false
+var portal_x := 0.0
+var portal_kind := ""
+var portal_done := false
+var in_moon := false
+var moon_amt := 0.0
+var moon_pts := 0
+var base_on := false
+var base_t := 0.0
+var base_x := 9999.0
+var base_flash := 0.0
+var meteors: Array = []
+var meteor_t := 0.0
+var lasers: Array = []
+var laser_t := 0.0
+var stars: Array = []
+var pixie_x := 9999.0
+var npc_who := "mango"
+var boss_started := false
+var boss_intro := -1.0
+var boss_intro2 := false
+var boss_on := false
+var boss_amt := 0.0
+var boss_hp := 0
+var boss_pos := Vector2.ZERO
+var boss_state := ""
+var boss_timer := 0.0
+var boss_t2 := 0.0
+var boss_lag2 := 1.0
+var boss_fl := 0.0
+var boss_seq := 0
+var laser_count := 0
+var rush_y := 0.0
+var bolts: Array = []
+var boss_vel := Vector2.ZERO
+var survive_left := 0.0
 var shots_left := 0
 var volleys_left := 0
 var bay_open := 0.0
@@ -124,6 +174,8 @@ func _ready() -> void:
 	_make_sounds()
 	for i in 14:
 		doodles.append([Vector2(randf_range(0, W), randf_range(30, H - 30)), randi() % 5])
+	for i in 150:
+		stars.append([Vector2(randf_range(0, 900), randf_range(-220, H - 30)), randf_range(0.6, 1.8), randf() * TAU])
 	_reset()
 
 
@@ -155,6 +207,28 @@ func _reset() -> void:
 	booms.clear()
 	fx.clear()
 	police_msg_wait = false
+	inverting = false
+	grav = 1.0
+	grav_vis = 1.0
+	loop_base = 0
+	speed_mult = 1.0
+	portal_on = false
+	portal_done = false
+	in_moon = false
+	moon_amt = 0.0
+	moon_pts = 0
+	base_on = false
+	base_x = 9999.0
+	meteors.clear()
+	lasers.clear()
+	pixie_x = 9999.0
+	npc_who = "mango"
+	boss_started = false
+	boss_intro = -1.0
+	boss_on = false
+	boss_amt = 0.0
+	boss_state = ""
+	bolts.clear()
 	ship_hp = SHIP_HP
 	boss_lag = 1.0
 	ship_flash = 0.0
@@ -162,6 +236,7 @@ func _reset() -> void:
 	burst_left = 0
 	missiles.clear()
 	shells.clear()
+	npc_who = "mango"
 	npc_msg = ""
 	npc_t = 0.0
 	mass_done = false
@@ -178,7 +253,7 @@ func _gap() -> float:
 
 
 func _speed() -> float:
-	return minf(115.0 + score * 3.0, 230.0)
+	return minf(115.0 + score * 3.0, 230.0) * speed_mult
 
 
 func _spacing() -> float:
@@ -248,12 +323,18 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _start() -> void:
 	_reset()
+	in_moon = true
+	moon_amt = 1.0
+	moon_pts = 20
+	pencils.clear()
+	_add_rock(PLANE_X + 200.0)
+	_start_boss()
 	state = "ready"
 	_play("point", 1.2)
 
 
 func _flap() -> void:
-	vel = FLAP * (1.0 - 0.35 * rain_amt)
+	vel = FLAP * grav * (1.0 - 0.35 * rain_amt) * (0.85 if in_moon else 1.0)
 	_play("flap", randf_range(0.9, 1.15))
 	for i in 3:
 		parts.append([Vector2(PLANE_X - 14, plane_y + 4), Vector2(randf_range(-90, -50), randf_range(10, 50)), 0.35, 0.35, Color(WHITE, 0.9), 4.0])
@@ -279,8 +360,17 @@ func _process(delta: float) -> void:
 	var sp := 60.0
 	if state == "play":
 		sp = _speed()
+		if base_on and base_x <= 345.0:
+			sp = 0.0
 	elif state == "over":
 		sp = 0.0
+	grav_vis = move_toward(grav_vis, grav, delta * 4.0)
+	moon_amt = move_toward(moon_amt, 1.0 if in_moon else 0.0, delta * 2.0)
+	boss_amt = move_toward(boss_amt, 1.0 if in_moon and (boss_on or boss_intro >= 0.0) else 0.0, delta * 0.7)
+	boss_fl = maxf(0.0, boss_fl - delta * 4.0)
+	if boss_fl <= 0.0:
+		boss_lag2 = move_toward(boss_lag2, float(maxi(boss_hp, 0)) / BOSS_HP, delta * 0.5)
+	base_flash = maxf(0.0, base_flash - delta * 4.0)
 	scroll += sp * delta
 	var target := 1.0 if raining and state == "play" else 0.0
 	if state == "over" and raining:
@@ -355,9 +445,16 @@ func _update_play(delta: float, sp: float) -> void:
 			p[6] += delta * 1.6
 		if (p[7] == 2 or p[7] == 4) and p[0] < PLANE_X + 250:
 			p[9] = move_toward(p[9], p[10], 170.0 * delta)
-	while pencils.back()[0] < _view_right() + 40:
+	while not portal_on and pencils.back()[0] < _view_right() + 40:
 		var last: Array = pencils.back()
-		if massing:
+		if in_moon:
+			if base_on:
+				_add_rock(last[0] + 70.0)
+			elif last[7] == 6:
+				_add_rock(last[0] + 150.0)
+			else:
+				_add_rock(last[0] + randf_range(130.0, 190.0))
+		elif massing:
 			if last[7] == 0:
 				_add_row(last[0] + _spacing())
 			else:
@@ -371,15 +468,22 @@ func _update_play(delta: float, sp: float) -> void:
 			_add_pencil(last[0] + (_spacing() if last[7] == 0 else _spacing() + 20))
 	_update_erasers(delta, sp)
 	_update_police(delta)
-	if pencils[0][0] < _view_left() - 60:
+	_update_moon(delta, sp)
+	if portal_on:
+		portal_x -= sp * delta
+		if portal_x < PLANE_X:
+			_enter_portal()
+	if pencils.size() > 1 and pencils[0][0] < _view_left() - 60:
 		pencils.pop_front()
-	vel += GRAVITY * (1.0 + 0.5 * rain_amt) * delta
-	vel = minf(vel, 520.0 + 120.0 * rain_amt)
+	var gmod := 0.6 if in_moon else 1.0
+	vel += GRAVITY * grav * gmod * (1.0 + 0.5 * rain_amt) * delta
+	var cap := 520.0 + 120.0 * rain_amt
+	vel = clampf(vel, -cap, cap) if grav < 0.0 else minf(vel, cap)
 	plane_y += vel * delta
 	for p in pencils:
 		if not p[3] and p[0] + PENCIL_W < PLANE_X - 10:
 			p[3] = true
-			if p[7] == 1 or p[7] == 3:
+			if p[7] == 1 or p[7] == 3 or p[7] == 6:
 				continue
 			score += 1
 			_play("point", 1.0 + (score % 5) * 0.06)
@@ -395,6 +499,21 @@ func _update_play(delta: float, sp: float) -> void:
 		return
 	for p in pencils:
 		if _hit(p):
+			_crash()
+			return
+	if boss_on and boss_state != "dying" and boss_pos.distance_to(Vector2(PLANE_X, plane_y)) < 32.0:
+		_crash()
+		return
+	for b in bolts:
+		if b[0].distance_to(Vector2(PLANE_X, plane_y)) < 8.0:
+			_crash()
+			return
+	for mt in meteors:
+		if mt[2] <= 0.0 and mt[0].distance_to(Vector2(PLANE_X, plane_y)) < 11.0:
+			_crash()
+			return
+	for lz in lasers:
+		if lz[2] <= 0.0 and lz[3] > 0.0 and Geometry2D.get_closest_point_to_segment(Vector2(PLANE_X, plane_y), lz[0], lz[1]).distance_to(Vector2(PLANE_X, plane_y)) < 8.0:
 			_crash()
 			return
 	for m in missiles:
@@ -423,8 +542,576 @@ func _add_floor(x: float) -> void:
 	pencils.append([x, H / 2.0, 0.0, false, col, false, 0.0, kind, 1, 0.0, ext])
 
 
+func _add_rock(x: float) -> void:
+	var kind := 6 if base_on else 5
+	var h := 16.0 if base_on else randf_range(30.0, 125.0)
+	pencils.append([x, H / 2.0, 0.0, false, MOON_GREY, false, randf() * 100.0, kind, 0, 0.0, h])
+
+
+func _open_portal(kind: String) -> void:
+	portal_on = true
+	portal_kind = kind
+	var far := _view_right() + 60.0
+	if not pencils.is_empty():
+		far = maxf(far, pencils.back()[0] + 170.0)
+	portal_x = far
+
+
+func _enter_portal() -> void:
+	portal_on = false
+	flash = 1.0
+	shake = 0.5
+	_play("level", 0.5)
+	pencils.clear()
+	erasers.clear()
+	if portal_kind == "moon":
+		in_moon = true
+		moon_pts = 0
+		base_on = false
+		base_x = 9999.0
+		meteor_t = 2.0
+		_add_rock(_view_right() + 80.0)
+		msg = "Welcome to the Moon!"
+		msg_t = 3.5
+	else:
+		in_moon = false
+		base_on = false
+		meteors.clear()
+		lasers.clear()
+		loop_base = score
+		mass_done = false
+		portal_done = false
+		speed_mult += 0.25
+		_add_pencil(_view_right() + 80.0)
+		_earn(50)
+		msg = "Back to the notebook... and everything is faster!"
+		msg_t = 3.5
+
+
+func _start_base() -> void:
+	base_on = true
+	for p in pencils:
+		if p[7] == 5 and p[0] > PLANE_X + 40:
+			p[7] = 6
+			p[10] = 16.0
+	base_t = 15.0
+	base_x = _view_right() + 120.0
+	laser_t = 2.5
+	msg = "The moon base is under attack! Survive!"
+	msg_t = 3.5
+	npc_who = "pixie"
+	npc_msg = "EXTERMINATE ALL HUMANS! Starting with this little paper one!"
+	npc_t = -1.5
+
+
+func _pixie_head() -> Vector2:
+	return Vector2(pixie_x, 100 + sin(t * 1.6) * 6.0)
+
+
+func _pixie_mouth() -> Vector2:
+	return _pixie_head() + Vector2(-8, -9)
+
+
+func _poly_o(pts: PackedVector2Array, col: Color, a: float, o: float = 2.5) -> void:
+	var c := Vector2.ZERO
+	for v in pts:
+		c += v / pts.size()
+	var outl := PackedVector2Array()
+	for v in pts:
+		outl.append(v + (v - c).normalized() * o)
+	draw_colored_polygon(outl, Color(INK, a))
+	draw_colored_polygon(pts, Color(col, a))
+
+
+func _robot_head(c: Vector2, sc: float, a: float, look: Vector2) -> void:
+	var m1 := Color("4a5163")
+	var m2 := Color("7d8698")
+	var helm := PackedVector2Array([c + Vector2(-26, -10) * sc, c + Vector2(-18, -26) * sc, c + Vector2(18, -26) * sc, c + Vector2(28, -12) * sc, c + Vector2(26, 10) * sc, c + Vector2(-24, 10) * sc])
+	_poly_o(helm, m1, a, 2.5 * sc)
+	_poly_o(PackedVector2Array([c + Vector2(-14, -24) * sc, c + Vector2(14, -24) * sc, c + Vector2(10, -18) * sc, c + Vector2(-10, -18) * sc]), m2, a, 1.0)
+	for side in [-1.0, 1.0]:
+		_poly_o(PackedVector2Array([c + Vector2(side * 16, -24) * sc, c + Vector2(side * 30, -42) * sc, c + Vector2(side * 22, -20) * sc]), m2, a, 1.5 * sc)
+	var visor := Rect2(c + Vector2(-20, -14) * sc, Vector2(40, 10) * sc)
+	draw_rect(visor.grow(1.5 * sc), Color(INK, a))
+	draw_rect(visor, Color(Color("2a0f14"), a))
+	var glow := 0.7 + 0.3 * sin(t * 6.0)
+	var ep := visor.get_center() + look.limit_length(1.0) * Vector2(12, 2) * sc
+	draw_circle(ep, 6.0 * sc, Color(RED, 0.35 * glow * a))
+	draw_circle(ep, 3.5 * sc, Color(RED, a))
+	draw_circle(ep, 1.5 * sc, Color(Color("fff0c0"), a))
+	var jaw := PackedVector2Array([c + Vector2(-22, 8) * sc, c + Vector2(22, 8) * sc, c + Vector2(16, 22) * sc, c + Vector2(-16, 22) * sc])
+	_poly_o(jaw, m2, a, 2.0 * sc)
+	for i in 5:
+		var tx := -14.0 + i * 7.0
+		draw_colored_polygon(PackedVector2Array([c + Vector2(tx - 3, 8) * sc, c + Vector2(tx + 3, 8) * sc, c + Vector2(tx, 14) * sc]), Color(WHITE, a))
+	draw_circle(c + Vector2(-22, -2) * sc, 1.5 * sc, Color(INK, a))
+	draw_circle(c + Vector2(22, -2) * sc, 1.5 * sc, Color(INK, a))
+
+
+func _pixie() -> void:
+	var body := boss_pos
+	var h := _boss_head()
+	var tilt := clampf(boss_vel.x * 0.0012, -0.4, 0.4)
+	draw_set_transform_matrix(view * Transform2D(tilt, body) * Transform2D(0.0, -body))
+	var m1 := Color("4a5163")
+	var m2 := Color("7d8698")
+	for side in [-1.0, 1.0]:
+		var jp := body + Vector2(side * 30.0, 30.0)
+		var fl := 20.0 + sin(t * 30.0 + side) * 6.0 + clampf(-boss_vel.y * 0.05, 0.0, 14.0)
+		draw_colored_polygon(PackedVector2Array([jp + Vector2(-7, 4), jp + Vector2(7, 4), jp + Vector2(0, 4 + fl * 1.6)]), Color(ORANGE, 0.9))
+		draw_colored_polygon(PackedVector2Array([jp + Vector2(-4, 4), jp + Vector2(4, 4), jp + Vector2(0, 4 + fl)]), YELLOW)
+		_poly_o(PackedVector2Array([jp + Vector2(-9, -10), jp + Vector2(9, -10), jp + Vector2(7, 5), jp + Vector2(-7, 5)]), m2, 1.0, 2.0)
+	var wing_up := sin(t * 5.0) * 12.0
+	for side2 in [-1.0, 1.0]:
+		var wb := body + Vector2(side2 * 24.0, -18.0)
+		_poly_o(PackedVector2Array([wb, wb + Vector2(side2 * 52.0, -30.0 + wing_up), wb + Vector2(side2 * 58.0, -12.0 + wing_up), wb + Vector2(side2 * 20.0, 12.0)]), m1, 1.0, 2.5)
+		draw_line(wb + Vector2(side2 * 8.0, -4), wb + Vector2(side2 * 50.0, -26.0 + wing_up), RED, 2.0)
+	var torso := PackedVector2Array([body + Vector2(-32, -26), body + Vector2(32, -26), body + Vector2(26, 22), body + Vector2(-26, 22)])
+	_poly_o(torso, m1, 1.0, 3.0)
+	_poly_o(PackedVector2Array([body + Vector2(-22, -18), body + Vector2(22, -18), body + Vector2(18, 10), body + Vector2(-18, 10)]), m2, 1.0, 1.5)
+	var core := 0.6 + 0.4 * sin(t * 5.0)
+	draw_circle(body + Vector2(0, -4), 9.0, INK)
+	draw_circle(body + Vector2(0, -4), 7.0, Color(RED, core))
+	draw_circle(body + Vector2(0, -4), 3.0, Color(Color("fff0c0"), core))
+	for side3 in [-1.0, 1.0]:
+		var sh := body + Vector2(side3 * 34.0, -16.0)
+		var el := sh + Vector2(side3 * 10.0, 22.0 + sin(t * 2.0 + side3) * 4.0)
+		var hand := el + Vector2(side3 * -4.0, 20.0)
+		draw_line(sh, el, INK, 8.0)
+		draw_line(sh, el, m2, 5.0)
+		draw_line(el, hand, INK, 7.0)
+		draw_line(el, hand, m2, 4.0)
+		draw_circle(sh, 6.0, INK)
+		draw_circle(sh, 4.5, m1)
+		for k in 3:
+			var cd := Vector2.from_angle(PI / 2.0 + (k - 1) * 0.5)
+			draw_line(hand, hand + cd * 8.0, INK, 3.0)
+	draw_line(body + Vector2(18, -26), body + Vector2(24, -44), INK, 2.0)
+	draw_circle(body + Vector2(24, -44), 3.0, RED if fmod(t * 2.0, 1.0) < 0.5 else Color("6e2a2a"))
+	draw_rect(Rect2(h.x - 8, h.y + 18, 16, 12), INK)
+	draw_rect(Rect2(h.x - 6, h.y + 18, 12, 12), Color("5d6578"))
+	var look := Vector2(PLANE_X, plane_y) - h
+	_robot_head(h, 1.0, 1.0, look.normalized())
+	for side4 in [-1.0, 1.0]:
+		var tp := _turret_pos(side4)
+		var ta := (Vector2(PLANE_X, plane_y) - tp).angle()
+		_quad(tp + Vector2.from_angle(ta) * 9.0, Vector2(16, 6), ta, INK)
+		_quad(tp + Vector2.from_angle(ta) * 9.0, Vector2(13, 3.5), ta, Color("5d6578"))
+		draw_circle(tp, 7.0, INK)
+		draw_circle(tp, 5.5, Color("7d8698"))
+		if boss_state == "volley":
+			var gg := 0.5 + 0.5 * sin(t * 30.0)
+			draw_circle(tp + Vector2.from_angle(ta) * 16.0, 4.0 + gg * 2.0, Color(RED, 0.6 + 0.3 * gg))
+	if boss_fl > 0.0:
+		draw_circle(body + Vector2(0, -20), 60.0, Color(1, 1, 1, boss_fl * 0.35))
+	var charging := false
+	for lz in lasers:
+		if lz[2] > 0.0:
+			charging = true
+	if charging:
+		var g := 0.5 + 0.5 * sin(t * 25.0)
+		draw_circle(_boss_eye(), 7.0 + g * 4.0, Color(RED, 0.5 + 0.3 * g))
+		draw_circle(_boss_eye(), 3.0, Color(WHITE, 0.9))
+	_wt(Vector2.ZERO, 0.0)
+
+
+func _pixie_sprite(tl: Vector2, px: float, a: float) -> void:
+	for r in PIXIE.size():
+		var row: String = PIXIE[r]
+		for c in row.length():
+			var ch := row[c]
+			if ch == ".":
+				continue
+			var col := INK
+			match ch:
+				"R":
+					col = Color("f0524e")
+				"D":
+					col = Color("c23a3a")
+				"S":
+					col = Color("fbe8d8")
+				"P":
+					col = Color("f47a7a")
+				"W":
+					col = WHITE
+			draw_rect(Rect2(tl + Vector2(c, r) * px, Vector2(px + 0.2, px + 0.2)), Color(col, a))
+
+
+func _boss_head() -> Vector2:
+	return boss_pos + Vector2(0, -46)
+
+
+func _boss_eye() -> Vector2:
+	return _boss_head() + Vector2(0, -9)
+
+
+func _turret_pos(side: float) -> Vector2:
+	return boss_pos + Vector2(side * 30.0, -30.0)
+
+
+func _start_boss() -> void:
+	boss_started = true
+	boss_intro = 0.0
+	boss_intro2 = false
+	meteors.clear()
+	npc_who = "pixie"
+	npc_msg = "Ohh! A human? On MY moon?"
+	npc_t = 0.0
+	msg = ""
+	msg_t = 0.0
+
+
+func _update_boss(delta: float) -> void:
+	if boss_intro >= 0.0:
+		boss_intro += delta
+		if boss_intro > 2.6 and not boss_intro2:
+			boss_intro2 = true
+			npc_who = "pixie"
+			npc_msg = "MACHINE! DESTROY IT!"
+			npc_t = 0.0
+			shake = 0.3
+		if boss_intro > 4.0:
+			boss_intro = -1.0
+			boss_on = true
+			boss_hp = BOSS_HP
+			survive_left = SURVIVE_TIME
+			boss_lag2 = 1.0
+			boss_seq = 0
+			boss_pos = Vector2(_view_right() + 140.0, 40.0)
+			boss_state = "enter"
+			_play("crash", 0.5)
+	if not boss_on:
+		return
+	var heat := clampf(1.0 - survive_left / SURVIVE_TIME, 0.0, 1.0)
+	if boss_state != "leave":
+		survive_left -= delta
+		if survive_left <= 0.0:
+			survive_left = 0.0
+			boss_state = "leave"
+			lasers.clear()
+			bolts.clear()
+			npc_who = "pixie"
+			npc_msg = "Ugh, this is wasting WAY too much fuel... I can't afford this in this economy!"
+			npc_t = 0.0
+			_earn(50)
+	var home := BOSS_HOME + Vector2(sin(t * 0.9) * 22.0, sin(t * 1.7) * 18.0)
+	var me := Vector2(PLANE_X, plane_y)
+	var prev := boss_pos
+	boss_timer -= delta
+	match boss_state:
+		"enter":
+			boss_pos = boss_pos.move_toward(home, 230.0 * delta)
+			if boss_pos.distance_to(home) < 4.0:
+				boss_state = "idle"
+				boss_timer = 1.0
+		"idle":
+			boss_pos = boss_pos.move_toward(home, 120.0 * delta)
+			if boss_timer <= 0.0:
+				var pick := boss_seq % 3 if heat < 0.5 else randi() % 3
+				boss_seq += 1
+				if pick == 0:
+					boss_state = "laser"
+					laser_count = 2 + int(heat * 2.5)
+					boss_timer = 0.2
+				elif pick == 1:
+					boss_state = "volley"
+					boss_timer = 1.2
+				else:
+					boss_state = "rush_warn"
+					rush_y = clampf(plane_y, 50.0, H - 40.0)
+					boss_timer = 1.6
+		"laser":
+			boss_pos = boss_pos.move_toward(home, 120.0 * delta)
+			if boss_timer <= 0.0:
+				if laser_count > 0:
+					laser_count -= 1
+					var org := _boss_eye()
+					var d := (me + Vector2(0, randf_range(-15, 15)) - org).normalized()
+					lasers.append([org, org + d * 900.0, 0.85, 0.3])
+					boss_timer = lerpf(1.25, 0.85, heat)
+				else:
+					boss_state = "idle"
+					boss_timer = lerpf(1.0, 0.35, heat)
+		"volley":
+			boss_pos = boss_pos.move_toward(home, 120.0 * delta)
+			if boss_timer <= 0.0:
+				for side in [-1.0, 1.0]:
+					var tp := _turret_pos(side)
+					var base_ang := (me - tp).angle()
+					var nb := 3 + int(heat * 2.2)
+					for k in nb:
+						var ang: float = base_ang + (k - (nb - 1) / 2.0) * lerpf(0.3, 0.24, heat)
+						bolts.append([tp + Vector2.from_angle(ang) * 14.0, Vector2.from_angle(ang) * lerpf(125.0, 160.0, heat)])
+				_play("crash", 2.0)
+				boss_state = "idle"
+				boss_timer = lerpf(1.6, 0.6, heat)
+		"rush_warn":
+			if boss_timer > 0.4:
+				rush_y = clampf(plane_y, 50.0, H - 40.0)
+			boss_pos.y = move_toward(boss_pos.y, rush_y, 260.0 * delta)
+			boss_pos.x = move_toward(boss_pos.x, home.x, 120.0 * delta)
+			if boss_timer <= 0.0:
+				boss_state = "rush"
+				_play("flap", 0.5)
+		"rush":
+			boss_pos.x -= lerpf(430.0, 560.0, heat) * delta
+			boss_pos.y = rush_y
+			for p in pencils:
+				if p[7] == 5 and absf(p[0] + PENCIL_W / 2.0 - boss_pos.x) < 34.0 and H - p[10] < boss_pos.y + 28.0:
+					p[10] = 18.0
+					_boom(boss_pos + Vector2(-20, 10), 32.0)
+					boss_fl = 1.0
+					shake = 0.6
+					boss_state = "stun"
+					boss_timer = 1.0
+					break
+			if boss_state == "rush" and boss_pos.x < _view_left() - 90.0:
+				boss_pos = Vector2(_view_right() + 120.0, 40.0)
+				boss_state = "enter"
+		"leave":
+			boss_pos += Vector2(60.0, -160.0) * delta
+			if boss_pos.y < -260.0:
+				boss_on = false
+				_open_portal("home")
+				msg = "You survived The Machine! A portal home opens..."
+				msg_t = 3.5
+		"stun":
+			boss_pos.y += 18.0 * delta
+			if randf() < 0.5:
+				fx.append([boss_pos + Vector2(randf_range(-25, 25), randf_range(-40, 10)), Vector2(randf_range(-120, 120), randf_range(-120, 40)), 0.0, 0.3, 2.0, 2])
+			if boss_timer <= 0.0:
+				boss_state = "enter"
+		"dying":
+			boss_pos.y += 45.0 * delta
+			boss_t2 -= delta
+			if boss_t2 <= 0.0:
+				boss_t2 = 0.14
+				_boom(boss_pos + Vector2(randf_range(-40, 40), randf_range(-60, 25)), randf_range(16, 30))
+			if boss_timer <= 0.0:
+				boss_on = false
+				_boom(boss_pos, 45.0)
+				flash = 1.0
+				_earn(50)
+				_open_portal("home")
+				msg = "The Machine is scrap! A portal home opens..."
+				msg_t = 3.5
+	if delta > 0.0:
+		boss_vel = boss_vel.lerp((boss_pos - prev) / delta, 0.2)
+	var bk: Array = []
+	for b in bolts:
+		b[0] += b[1] * delta
+		if _blocked(b[0]):
+			_boom(b[0], 7.0)
+			continue
+		if b[0].x < _view_left() - 30 or b[0].x > _view_right() + 30 or b[0].y < -260 or b[0].y > H + 30:
+			continue
+		bk.append(b)
+	bolts = bk
+
+
+func _draw_boss_fx() -> void:
+	if boss_state == "rush_warn" and boss_on:
+		_lane(Vector2(boss_pos.x, rush_y), Vector2(_view_left() - 60.0, rush_y), 30.0)
+	for b in bolts:
+		draw_circle(b[0], 5.0, INK)
+		draw_circle(b[0], 3.8, RED)
+		draw_circle(b[0], 1.6, WHITE)
+
+
+func _bar(title: String, hp: int, mx: int, lag: float, fl: float, a: float, y: float = H - 18.0, count: bool = true) -> void:
+	var r := Rect2(W / 2.0 - 120, y, 240, 9)
+	_text(title, Vector2(r.position.x, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
+	if count:
+		_text("%d / %d" % [maxi(hp, 0), mx], Vector2(r.end.x - 30, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
+	draw_rect(r.grow(3), Color(INK, a))
+	draw_rect(r, Color("3a3556", a))
+	var f := float(maxi(hp, 0)) / mx
+	draw_rect(Rect2(r.position, Vector2(r.size.x * lag, r.size.y)), Color(WHITE, a * 0.85))
+	draw_rect(Rect2(r.position, Vector2(r.size.x * f, r.size.y)), Color(RED, a))
+	draw_rect(Rect2(r.position, Vector2(r.size.x * f, 3)), Color(1, 1, 1, a * 0.35))
+	for i in range(1, mx):
+		var x := r.position.x + r.size.x * i / mx
+		draw_rect(Rect2(x - 1, r.position.y, 2, r.size.y), Color(INK, a))
+	if fl > 0.0:
+		draw_rect(r, Color(1, 1, 1, fl * 0.5 * a))
+
+
+func _update_moon(delta: float, sp: float) -> void:
+	var pgoal := minf(base_x + 15.0, W - 95.0) if base_on else W + 260.0
+	if base_on or pixie_x < 9000.0:
+		if pixie_x > 9000.0:
+			pixie_x = W + 260.0
+		pixie_x = move_toward(pixie_x, pgoal, 140.0 * delta)
+		if not base_on and pixie_x >= W + 250.0:
+			pixie_x = 9999.0
+	if base_x < 9000.0:
+		if base_on and base_x > 345.0:
+			base_x = maxf(345.0, base_x - sp * delta)
+		elif not base_on:
+			base_x -= sp * delta
+			if base_x < -150.0:
+				base_x = 9999.0
+	_update_boss(delta)
+	if in_moon and not portal_on and not boss_started:
+		meteor_t -= delta
+		if meteor_t <= 0.0:
+			meteor_t = randf_range(1.2, 2.0) if not base_on else randf_range(2.2, 3.2)
+			var threat := randf() < 0.6
+			var st := Vector2(randf_range(PLANE_X + 60, W + 60), -30)
+			var tg := Vector2(randf_range(PLANE_X - 90, PLANE_X - 25), H - 8)
+			if not threat:
+				tg = Vector2(randf_range(PLANE_X + 40, PLANE_X + 220), H - 8)
+			var dir := (tg - st).normalized()
+			var fin := st + dir * ((H + 40.0 - st.y) / maxf(dir.y, 0.2))
+			meteors.append([st, dir * 290.0, 0.9 if threat else 0.0, st, fin])
+	if base_on and base_x <= 345.0:
+		base_t -= delta
+		laser_t -= delta
+		if laser_t <= 0.0:
+			laser_t = randf_range(0.55, 0.95)
+			var org := _pixie_mouth()
+			var tgt := Vector2(base_x + randf_range(-45, 45), H - 10)
+			if randf() < 0.45:
+				var aim := Vector2(PLANE_X, plane_y + randf_range(-20, 20))
+				var d := (aim - org).normalized()
+				tgt = org + d * 650.0
+			lasers.append([org, tgt, 0.9, 0.35])
+		if base_t <= 0.0:
+			base_on = false
+			lasers.clear()
+			_open_portal("home")
+			msg = "The base held! A portal home opens..."
+			npc_who = "pixie"
+			npc_msg = "Systems overheating... Pixie will return!"
+			npc_t = 0.0
+			msg_t = 3.5
+	var mk: Array = []
+	for mt in meteors:
+		if mt[2] > 0.0:
+			mt[2] -= delta
+			mk.append(mt)
+			continue
+		mt[0] += mt[1] * delta
+		fx.append([mt[0], Vector2(randf_range(-20, 20), randf_range(-30, -5)), 0.0, 0.3, randf_range(3, 5), 0])
+		if mt[0].y > H - 12 or _blocked(mt[0]):
+			_boom(mt[0], 16.0)
+			continue
+		if mt[0].x < _view_left() - 40:
+			continue
+		mk.append(mt)
+	meteors = mk
+	var lk: Array = []
+	for lz in lasers:
+		if lz[2] > 0.0:
+			lz[2] -= delta
+			if lz[2] <= 0.0:
+				_boom(lz[1], 14.0)
+				if absf(lz[1].x - base_x) < 50.0:
+					base_flash = 1.0
+			lk.append(lz)
+			continue
+		lz[3] -= delta
+		if lz[3] > 0.0:
+			lk.append(lz)
+	lasers = lk
+
+
+func _lane(s0: Vector2, s1: Vector2, half: float) -> void:
+	var n := (s1 - s0).normalized().orthogonal() * half
+	var blink := 0.55 + 0.45 * sin(t * 18.0)
+	var lane := PackedVector2Array([s0 + n, s1 + n, s1 - n, s0 - n])
+	draw_colored_polygon(lane, Color(RED, 0.12 * blink))
+	lane.append(s0 + n)
+	draw_polyline(lane, Color(RED, 0.9 * blink), 2.0)
+
+
+func _draw_space() -> void:
+	draw_rect(Rect2(-500, -500, W + 1000, H + 1000), Color(SPACE, moon_amt))
+	for st in stars:
+		var sx := fposmod(st[0].x - scroll * 0.08, 900.0) - 220.0
+		var tw := 0.6 + 0.4 * sin(t * 2.0 + st[2])
+		draw_circle(Vector2(sx, st[0].y), st[1], Color(1, 1, 0.9, moon_amt * tw))
+	var ec := Vector2(400, 52)
+	draw_circle(ec, 24, Color(INK, moon_amt))
+	draw_circle(ec, 22, Color(BLUE, moon_amt))
+	draw_circle(ec + Vector2(-6, -5), 8, Color(LIME, moon_amt))
+	draw_circle(ec + Vector2(8, 6), 6, Color(LIME, moon_amt))
+	draw_circle(ec + Vector2(-8, 9), 4, Color(WHITE, moon_amt * 0.8))
+	draw_rect(Rect2(-500, H - 12, W + 1000, 600), Color(MOON_DARK, moon_amt))
+	draw_rect(Rect2(-500, H - 13, W + 1000, 2), Color(INK, moon_amt))
+	for i in 9:
+		var cx := fposmod(i * 83.0 - scroll, W + 120.0) - 60.0
+		draw_arc(Vector2(cx, H - 5), 9.0 + (i % 3) * 3.0, PI, TAU, 10, Color(INK, moon_amt * 0.5), 1.5)
+
+
+func _rock(p: Array) -> void:
+	var x: float = p[0] - 5.0
+	var w := PENCIL_W + 10.0
+	var top: float = H - p[10]
+	var sd: float = p[6]
+	var pts := PackedVector2Array()
+	pts.append(Vector2(x - 4, H))
+	var steps := 6
+	for i in steps + 1:
+		var fx2 := x + w * i / steps
+		var bump := sin(sd + i * 1.7) * 5.0
+		var yy: float = top + bump + (absf(i - steps / 2.0) * 3.0)
+		pts.append(Vector2(fx2, yy))
+	pts.append(Vector2(x + w + 4, H))
+	var outl := PackedVector2Array()
+	var c := Vector2(x + w / 2.0, (top + H) / 2.0)
+	for v in pts:
+		outl.append(v + (v - c).normalized() * 2.5)
+	draw_colored_polygon(outl, INK)
+	draw_colored_polygon(pts, MOON_GREY)
+	draw_rect(Rect2(x + w * 0.62, top + 6, w * 0.25, H - top), Color(MOON_DARK, 0.5))
+	if p[10] > 40.0:
+		draw_arc(Vector2(x + w * 0.4, top + p[10] * 0.35), 3.5, 0, TAU, 10, Color(INK, 0.6), 1.5)
+		draw_arc(Vector2(x + w * 0.7, top + p[10] * 0.65), 2.5, 0, TAU, 10, Color(INK, 0.6), 1.5)
+
+
+func _portal() -> void:
+	var c := Vector2(portal_x, H / 2.0)
+	for k in 6:
+		var rx := 34.0 - k * 5.0
+		var ry := H * 0.62 - k * 18.0
+		var pts := PackedVector2Array()
+		for i in 32:
+			var a := TAU * i / 32.0 + t * (1.5 + k * 0.4)
+			pts.append(c + Vector2(cos(a) * rx * (1.0 + 0.08 * sin(a * 3.0 + t * 4.0)), sin(a) * ry))
+		var col: Color = [Color("6a3fd1"), Color("8f5cf0"), Color("4fc3ff"), Color("b28cff"), Color("e0d0ff"), WHITE][k]
+		draw_colored_polygon(pts, Color(col, 0.85))
+	for i in 8:
+		var a2 := t * 3.0 + i * TAU / 8.0
+		draw_circle(c + Vector2(cos(a2) * 40.0, sin(a2) * H * 0.55), 2.0, Color(WHITE, 0.8))
+
+
+func _moon_base() -> void:
+	var c := Vector2(base_x, H - 12)
+	draw_rect(Rect2(c.x - 70, c.y - 14, 140, 14), INK)
+	draw_rect(Rect2(c.x - 68, c.y - 12, 136, 12), GREY)
+	var pts := PackedVector2Array()
+	for i in 21:
+		var a := PI + PI * i / 20.0
+		pts.append(c + Vector2(cos(a) * 44.0, sin(a) * 40.0 - 12.0))
+	draw_colored_polygon(pts, INK)
+	var pts2 := PackedVector2Array()
+	for i in 21:
+		var a2 := PI + PI * i / 20.0
+		pts2.append(c + Vector2(cos(a2) * 41.0, sin(a2) * 37.0 - 12.0))
+	draw_colored_polygon(pts2, Color("dfe8f2"))
+	for i in 3:
+		draw_circle(c + Vector2(-20 + i * 20, -30), 5.0, INK)
+		draw_circle(c + Vector2(-20 + i * 20, -30), 3.5, Color(YELLOW, 0.6 + 0.4 * sin(t * 3.0 + i)))
+	draw_rect(Rect2(c.x - 1, c.y - 76, 2, 26), INK)
+	draw_rect(Rect2(c.x + 1, c.y - 76, 14, 9), RED)
+	draw_circle(c + Vector2(0, -76), 3.0, Color(RED, 0.5 + 0.5 * sin(t * 6.0)))
+	if base_flash > 0.0:
+		draw_colored_polygon(pts2, Color(1, 0.6, 0.3, base_flash * 0.6))
+
+
 func _zoom() -> float:
-	return lerpf(1.0, ZOOM_OUT, smoothstep(0.0, 1.0, police_amt))
+	return minf(lerpf(1.0, ZOOM_OUT, smoothstep(0.0, 1.0, police_amt)), lerpf(1.0, BOSS_ZOOM, smoothstep(0.0, 1.0, boss_amt)))
 
 
 func _view_right() -> float:
@@ -440,7 +1127,7 @@ func _ship_bottom() -> float:
 
 
 func _ceiling() -> float:
-	return lerpf(4.0, SHIP_LOW + 6.0, smoothstep(0.0, 1.0, police_amt))
+	return 4.0 + (SHIP_LOW + 2.0) * smoothstep(0.0, 1.0, police_amt) - 150.0 * smoothstep(0.0, 1.0, boss_amt)
 
 
 func _cannon_pos(i: int) -> Vector2:
@@ -467,7 +1154,8 @@ func _update_police(delta: float) -> void:
 		for p in pencils:
 			if p[7] >= 3 and p[0] < PLANE_X:
 				police_msg_wait = false
-				npc_msg = "This is the Sky Police! You are flying illegally. Land now or be destroyed!"
+				npc_who = "mango"
+				npc_msg = "You have illegally entered the Mango Men Empire! Surrender and be annihilated!"
 				npc_t = 0.0
 				break
 	for i in CANNON_X.size():
@@ -539,7 +1227,8 @@ func _update_police(delta: float) -> void:
 			_boom(Vector2(randf_range(-90, 420), _ship_bottom() - randf_range(0, 30)), randf_range(14, 26))
 	if policing and volleys_left <= 0 and missiles.is_empty():
 		policing = false
-		npc_msg = "Out of ammo... Don't worry, we'll get 'em next time."
+		npc_who = "mango"
+		npc_msg = "Out of ammo... Don't worry, the Mango Men will get you next time."
 		npc_t = 0.0
 		_earn(25)
 
@@ -567,6 +1256,7 @@ func _ship_hit() -> void:
 	ship_hp -= 1
 	ship_flash = 1.0
 	if ship_hp == SHIP_HP - 1:
+		npc_who = "mango"
 		npc_msg = "Hey! Watch where you're pointing those!"
 		npc_t = 0.0
 	if ship_hp <= 0 and policing:
@@ -574,6 +1264,7 @@ func _ship_hit() -> void:
 		sink_t = 1.8
 		missiles.clear()
 		shells.clear()
+		npc_who = "mango"
 		npc_msg = "Mayday! Mayday! We're hit! Retreat, retreat!"
 		npc_t = 0.0
 		flash = 1.0
@@ -653,6 +1344,10 @@ func _rain_check() -> void:
 			raining = true
 		elif pending == "fog":
 			fogging = true
+		elif pending == "gravity":
+			inverting = true
+			grav = -1.0
+			shake = 0.3
 		elif pending == "police":
 			policing = true
 			since_riser = 0.0
@@ -668,24 +1363,42 @@ func _rain_check() -> void:
 			shake = 0.4
 		pending = ""
 		return
-	if policing:
+	if in_moon:
+		if not boss_started:
+			moon_pts += 1
+			if moon_pts >= 20:
+				_start_boss()
+		return
+	if policing or portal_on:
 		return
 	var nxt := score + 1
-	if nxt == 10:
+	var rel := nxt - loop_base
+	if rel >= 100 and not portal_done:
+		raining = false
+		fogging = false
+		massing = false
+		inverting = false
+		grav = 1.0
+		portal_done = true
+		_open_portal("moon")
+		msg = "A strange portal tears open ahead..."
+		msg_t = 3.5
+		return
+	if rel == 25:
 		raining = false
 		fogging = false
 		massing = false
 		pending = "police"
 		police_msg_wait = true
 		return
-	if nxt >= 50 and not mass_done and not massing:
+	if rel >= 50 and not mass_done and not massing:
 		raining = false
 		fogging = false
 		pending = "mass"
 		msg = "Everything snaps into line..."
 		msg_t = 3.5
 		return
-	if raining or fogging or massing:
+	if raining or fogging or massing or inverting:
 		rain_left -= 1
 		if rain_left <= 0:
 			if massing:
@@ -695,13 +1408,20 @@ func _rain_check() -> void:
 			raining = false
 			fogging = false
 			massing = false
+			inverting = false
+			grav = 1.0
 		return
-	if nxt == 10:
+	if rel == 10:
 		pending = "rain"
-	elif nxt > 10 and (nxt - 10) % 9 == 0 and randf() < 0.1:
+	elif rel > 10 and (rel - 10) % 9 == 0 and randf() < 0.1:
 		pending = "fog"
-	elif nxt > 10 and (nxt - 10) % 13 == 0 and randf() < 0.1:
+	elif rel > 10 and (rel - 10) % 13 == 0 and randf() < 0.1:
 		pending = "rain"
+	elif rel > 10 and (rel - 10) % 11 == 0 and randf() < 0.1:
+		pending = "gravity"
+	if pending == "gravity":
+		msg = "Gravity feels... upside down?"
+		msg_t = 3.5
 	if pending == "rain":
 		msg = "The skies grow darker..."
 		msg_t = 3.5
@@ -711,6 +1431,8 @@ func _rain_check() -> void:
 
 
 func _bounds(p: Array) -> Vector2:
+	if p[7] >= 5:
+		return Vector2(-9999.0, H - p[10])
 	if p[7] >= 3:
 		var fb := H - EDGE
 		if p[7] == 4:
@@ -766,7 +1488,7 @@ func _wt(pos: Vector2, rot: float) -> void:
 
 func _draw() -> void:
 	var z := _zoom()
-	var focus := Vector2(W / 2.0, lerpf(H / 2.0, FOCUS_Y, smoothstep(0.0, 1.0, police_amt)))
+	var focus := Vector2(W / 2.0, H / 2.0 + (FOCUS_Y - H / 2.0) * smoothstep(0.0, 1.0, police_amt) + (BOSS_FOCUS - H / 2.0) * smoothstep(0.0, 1.0, boss_amt))
 	view = Transform2D(0.0, Vector2(z, z), 0.0, Vector2(W / 2.0, H / 2.0) - focus * z)
 	var so := Vector2(randf_range(-1, 1), randf_range(-1, 1)) * shake * shake * 8.0
 	_wt(so, 0.0)
@@ -781,6 +1503,15 @@ func _draw() -> void:
 		draw_circle(Vector2(mx - 20, 40 + i * 64), 6, Color("d9d2c0"))
 	for d in doodles:
 		_doodle(d[0], d[1])
+	if moon_amt > 0.0:
+		_draw_space()
+	if base_x < 9000.0:
+		_moon_base()
+	if boss_on:
+		_pixie()
+	_draw_boss_fx()
+	if portal_on:
+		_portal()
 	if state != "menu":
 		for p in pencils:
 			if p[0] > _view_left() - 60 and p[0] < _view_right() + 20:
@@ -817,6 +1548,27 @@ func _draw() -> void:
 			_warn_path(e)
 		else:
 			_eraser(e[0], e[2])
+	for mt in meteors:
+		if mt[2] > 0.0:
+			_lane(mt[3], mt[4], 8.0)
+		else:
+			draw_circle(mt[0], 9.0, INK)
+			draw_circle(mt[0], 7.5, Color("7a6656"))
+			draw_circle(mt[0] + Vector2(-2, -2), 2.0, Color("5a4a3e"))
+			draw_circle(mt[0] + Vector2(3, 2), 1.5, Color("5a4a3e"))
+	for lz in lasers:
+		if lz[2] > 0.0:
+			var blink := 0.5 + 0.5 * sin(t * 20.0)
+			var segs := 14
+			for i in segs:
+				if i % 2 == 0:
+					var a0: Vector2 = lz[0].lerp(lz[1], float(i) / segs)
+					var a1: Vector2 = lz[0].lerp(lz[1], float(i + 1) / segs)
+					draw_line(a0, a1, Color(RED, 0.5 + 0.5 * blink), 2.0)
+		else:
+			var k: float = lz[3] / 0.35
+			draw_line(lz[0], lz[1], Color(RED, 0.9 * k), 10.0)
+			draw_line(lz[0], lz[1], Color(WHITE, k), 3.0)
 	for sh in shells:
 		draw_circle(sh[0], 5.0, INK)
 		draw_circle(sh[0], 3.5, GREY_DARK)
@@ -867,7 +1619,8 @@ func _draw() -> void:
 
 
 func _plane(base: Vector2) -> void:
-	var rot := clampf(vel / 500.0, -0.5, 0.8)
+	var rot := clampf(vel / 500.0, -0.5, 0.8) if grav > 0.0 else clampf(vel / 500.0, -0.8, 0.5)
+	var fl := grav_vis if absf(grav_vis) > 0.15 else 0.15 * signf(grav_vis + 0.0001)
 	if state == "over":
 		_wt(base, crash_rot)
 		draw_circle(Vector2.ZERO, 12, INK)
@@ -880,10 +1633,10 @@ func _plane(base: Vector2) -> void:
 	var top := PackedVector2Array([Vector2(18, 0), Vector2(-15, -13), Vector2(-7, 0)])
 	var under := PackedVector2Array([Vector2(18, 0), Vector2(-7, 0), Vector2(-15, 10)])
 	for o in [Vector2(-1.5, 0), Vector2(1.5, 0), Vector2(0, -1.5), Vector2(0, 1.5)]:
-		_wt(base + o, rot)
+		draw_set_transform_matrix(view * Transform2D(rot, Vector2(1.0, fl), 0.0, base + o))
 		draw_colored_polygon(top, INK)
 		draw_colored_polygon(under, INK)
-	_wt(base, rot)
+	draw_set_transform_matrix(view * Transform2D(rot, Vector2(1.0, fl), 0.0, base))
 	_plane_paint(skin)
 	_wt(Vector2.ZERO, 0.0)
 
@@ -920,6 +1673,9 @@ func _plane_preview(base: Vector2, id: int, sc: float) -> void:
 
 
 func _pencil(p: Array) -> void:
+	if p[7] >= 5:
+		_rock(p)
+		return
 	var x: float = p[0]
 	var b := _bounds(p)
 	var top: float = floor(b.x)
@@ -952,19 +1708,16 @@ func _police_ship() -> void:
 			parts.append([Vector2(cx + 5, b - 4), Vector2(randf_range(-8, 8), randf_range(10, 30)), 0.5, 0.5, GREY, 4.0])
 	if ship_flash > 0.0:
 		draw_colored_polygon(hull, Color(1, 1, 1, ship_flash * 0.6))
-	draw_rect(Rect2(-160, b - 30, 610, 10), WHITE)
-	for i in 76:
-		if i % 2 == 0:
-			draw_rect(Rect2(-160 + i * 8, b - 30, 8, 5), BLUE_DARK)
-		else:
-			draw_rect(Rect2(-160 + i * 8, b - 25, 8, 5), BLUE_DARK)
+	var bands: Array = [Color("e8261c"), ORANGE, YELLOW, LIME]
+	for k in 4:
+		draw_rect(Rect2(-160, b - 30 + k * 2.5, 610, 2.5), bands[k])
 	draw_rect(Rect2(-160, b - 31, 610, 1.5), INK)
 	draw_rect(Rect2(-160, b - 20, 610, 1.5), INK)
 	var on := fmod(t * 3.0, 1.0) < 0.5
 	draw_circle(Vector2(-100, b + 1), 6.0, INK)
-	draw_circle(Vector2(-100, b + 1), 4.5, RED if on else Color("6e2a2a"))
+	draw_circle(Vector2(-100, b + 1), 4.5, ORANGE if on else Color("6e4a2a"))
 	draw_circle(Vector2(390, b + 1), 6.0, INK)
-	draw_circle(Vector2(390, b + 1), 4.5, Color("2a3a6e") if on else BLUE)
+	draw_circle(Vector2(390, b + 1), 4.5, Color("2a5a2a") if on else LIME)
 	for si in SILO_X.size():
 		var bp := _bay_pos(si)
 		draw_circle(bp, 15.0, INK)
@@ -1046,7 +1799,7 @@ func _wrap(text: String, width: float, size: int) -> Array:
 
 
 func _npc_box() -> void:
-	if npc_msg == "" or npc_t > 6.0:
+	if npc_msg == "" or npc_t > 6.0 or npc_t < 0.0:
 		return
 	var a := clampf(minf(npc_t * 4.0, (6.0 - npc_t) * 2.0), 0.0, 1.0)
 	var box := Rect2(10, H - 64 - 30.0 * smoothstep(0.0, 1.0, police_amt), W - 20, 54)
@@ -1055,20 +1808,57 @@ func _npc_box() -> void:
 	var pr := Rect2(box.position + Vector2(6, 6), Vector2(42, 42))
 	draw_rect(pr.grow(2), Color(INK, a))
 	draw_rect(pr, Color("cfe0f5", a))
-	var hc := pr.position + Vector2(21, 17)
-	draw_rect(Rect2(pr.position + Vector2(8, 26), Vector2(26, 16)), Color(NAVY, a))
-	draw_circle(pr.position + Vector2(21, 30), 13.0, Color(NAVY, a))
-	draw_rect(Rect2(pr.position + Vector2(19, 30), Vector2(4, 12)), Color(YELLOW, a))
-	draw_circle(hc, 8.0, Color("f2c9a0", a))
-	draw_rect(Rect2(hc + Vector2(-9, -9), Vector2(18, 5)), Color(NAVY_DARK, a))
-	draw_rect(Rect2(hc + Vector2(-11, -5), Vector2(22, 2)), Color(INK, a))
-	draw_circle(hc + Vector2(-3, 1), 1.2, Color(INK, a))
-	draw_circle(hc + Vector2(3, 1), 1.2, Color(INK, a))
-	_text("SKY POLICE", box.position + Vector2(58, 15), 11, Color(BLUE_DARK, a), false)
+	if npc_who == "pixie":
+		draw_rect(pr, Color(SPACE, a))
+		_pixie_sprite(pr.position + Vector2(3, 5), 2.0, a)
+		_text("PIXIE", box.position + Vector2(58, 15), 11, Color(RED, a), false, 2, Color(INK, a))
+	else:
+		_mango(pr.position + Vector2(21, 25 + sin(t * 3.0) * 1.0), a)
+		_text("MANGO MEN", box.position + Vector2(58, 15), 11, Color(ORANGE, a), false, 2, Color(INK, a))
 	var shown := npc_msg.substr(0, int(npc_t * 45.0))
 	var lines := _wrap(shown, box.size.x - 66, 12)
 	for i in mini(lines.size(), 2):
 		_text(lines[i], box.position + Vector2(58, 31 + i * 15), 12, Color(INK, a), false)
+
+
+func _mango(c: Vector2, a: float) -> void:
+	var rx := 15.0
+	var ry := 15.0
+	var leaf_l := PackedVector2Array([c + Vector2(-2, -14), c + Vector2(-18, -18), c + Vector2(-20, -12), c + Vector2(-8, -11)])
+	var leaf_r := PackedVector2Array([c + Vector2(2, -14), c + Vector2(17, -19), c + Vector2(20, -12), c + Vector2(8, -11)])
+	for lf in [leaf_l, leaf_r]:
+		var o := PackedVector2Array()
+		var lc := Vector2.ZERO
+		for v in lf:
+			lc += v / 4.0
+		for v in lf:
+			o.append(v + (v - lc).normalized() * 1.5)
+		draw_colored_polygon(o, Color(INK, a))
+		draw_colored_polygon(lf, Color(Color("3cc23a"), a))
+	var cols: Array = [Color("e8261c"), Color("e8261c"), Color("f26a1b"), Color("f7941d"), Color("fbb829"), Color("f5e03a"), Color("b8e04a"), Color("4cc23e")]
+	var yy := -ry - 1.5
+	while yy <= ry + 1.5:
+		var k := clampf(yy / (ry + 1.5), -1.0, 1.0)
+		var hw := (rx + 1.5) * sqrt(maxf(0.0, 1.0 - k * k))
+		draw_rect(Rect2(c.x - hw, c.y + yy, hw * 2.0, 1.0), Color(INK, a))
+		yy += 1.0
+	yy = -ry
+	while yy <= ry:
+		var k2 := yy / ry
+		var hw2 := rx * sqrt(maxf(0.0, 1.0 - k2 * k2)) * (1.0 - 0.06 * k2)
+		var band := clampi(int((yy + ry) / (2.0 * ry) * cols.size()), 0, cols.size() - 1)
+		draw_rect(Rect2(c.x - hw2, c.y + yy, hw2 * 2.0, 1.0), Color(cols[band], a))
+		yy += 1.0
+	draw_rect(Rect2(c.x - 2, c.y - ry - 5, 4, 6), Color(INK, a))
+	draw_rect(Rect2(c.x - 1, c.y - ry - 4, 2, 5), Color(ORANGE, a))
+	draw_rect(Rect2(c.x - 17, c.y - 6, 34, 2), Color(INK, a))
+	for side in [-1.0, 1.0]:
+		var lx: float = c.x + side * 7.0 - 5.0
+		draw_rect(Rect2(lx, c.y - 6, 10, 5), Color(INK, a))
+		draw_rect(Rect2(lx + 1, c.y - 1, 8, 1), Color(INK, a))
+		draw_rect(Rect2(lx + 2, c.y - 5, 2, 1), Color(Color("cfcfcf"), a))
+		draw_rect(Rect2(lx + 4, c.y - 4, 2, 1), Color(Color("cfcfcf"), a))
+		draw_rect(Rect2(lx + 2, c.y - 3, 2, 1), Color(Color("8a8a8a"), a))
 
 
 func _warn_path(e: Array) -> void:
@@ -1297,7 +2087,8 @@ func _caption() -> void:
 
 
 func _scenario_box() -> void:
-	var amt := maxf(maxf(rain_amt, fog_amt), maxf(mass_amt, police_amt))
+	var inv_amt := (1.0 - grav_vis) / 2.0
+	var amt := maxf(maxf(maxf(rain_amt, fog_amt), maxf(mass_amt, police_amt)), maxf(inv_amt, moon_amt))
 	if amt <= 0.0:
 		return
 	var a := clampf(amt * 1.5, 0.0, 1.0)
@@ -1309,8 +2100,12 @@ func _scenario_box() -> void:
 	var blink := 0.8 + 0.2 * sin(t * 6.0)
 	_text("SCENARIO ACTIVE", r.position + Vector2(64, 17), 11, Color(RED, a * blink), true)
 	var label := "RAIN"
-	if police_amt > 0.0:
-		label = "SKY POLICE"
+	if moon_amt > 0.0:
+		label = "THE MACHINE" if boss_on or boss_intro >= 0.0 else "THE MOON"
+	elif inv_amt > 0.0:
+		label = "GRAVITY FLIP"
+	elif police_amt > 0.0:
+		label = "MANGO MEN"
 	elif mass_amt > 0.0:
 		label = "MASS RESET"
 	elif fog_amt > rain_amt:
@@ -1322,11 +2117,13 @@ func _score_box() -> void:
 	_text(str(score), Vector2(W / 2.0, 44), 36, WHITE, true, 5)
 	if police_amt > 0.0 and (ship_hp > 0 or sink_t > 0.0) and state == "play":
 		_boss_bar(clampf(police_amt * 1.5, 0.0, 1.0))
+	if boss_on and state == "play":
+		_bar("SURVIVE  %ds" % int(ceil(survive_left)), int(ceil(survive_left / 5.0)), int(SURVIVE_TIME / 5.0), survive_left / SURVIVE_TIME, 0.0, clampf(boss_amt * 1.5, 0.0, 1.0), H - 11.0, false)
 
 
 func _boss_bar(a: float) -> void:
 	var r := Rect2(W / 2.0 - 120, H - 18, 240, 9)
-	_text("SKY POLICE CRUISER", Vector2(r.position.x, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
+	_text("MANGO MEN CRUISER", Vector2(r.position.x, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
 	_text("%d / %d" % [maxi(ship_hp, 0), SHIP_HP], Vector2(r.end.x - 30, r.position.y - 4), 11, Color(WHITE, a), false, 3, Color(INK, a))
 	draw_rect(r.grow(3), Color(INK, a))
 	draw_rect(r, Color("3a3556", a))
